@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradingView Candlestick Chart - Live Market Data</title>
+    <meta name="description"
+        content="Interactive candlestick chart visualization using TradingView Lightweight Charts for real-time market data analysis">
+
+    <!-- TradingView Lightweight Charts Library -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+
+    <!-- Indicators Module -->
+    <script src="indicators/utils.js"></script>
+    <script src="indicators/rsi.js"></script>
+    <script src="indicators/macd.js"></script>
+    <script src="indicators/volume.js"></script>
+    <script src="indicators/overlays.js"></script>
+    <script src="indicators/sync.js"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>📈 TradingView Chart</h1>
+        <p class="subtitle">Interactive Candlestick Chart with Live Market Data</p>
+
+        <div class="controls-panel">
+            <div class="controls-grid">
+                <div class="input-group">
+                    <label for="symbol">Symbol</label>
+                    <input type="text" id="symbol" value="NSE:SBIN-EQ" placeholder="e.g., NSE:SBIN-EQ">
+                </div>
+
+                <div class="input-group">
+                    <label for="resolution">Resolution (Minutes)</label>
+                    <select id="resolution">
+                        <option value="1">1 Minute</option>
+                        <option value="5" selected>5 Minutes</option>
+                        <option value="15">15 Minutes</option>
+                        <option value="30">30 Minutes</option>
+                        <option value="60">1 Hour</option>
+                        <option value="D">Daily</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label for="rangeFrom">From Date</label>
+                    <input type="date" id="rangeFrom" value="2026-01-01">
+                </div>
+
+                <div class="input-group">
+                    <label for="rangeTo">To Date</label>
+                    <input type="date" id="rangeTo" value="2026-01-01">
+                </div>
+            </div>
+
+            <button class="btn" id="loadBtn" onclick="renderChart()">
+                Load Chart
+            </button>
+
+            <div class="error-message" id="errorMessage"></div>
+        </div>
+
+        <div class="chart-container">
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div class="loading-text">Loading chart data...</div>
+            </div>
+            <div id="tvchart"></div>
+        </div>
+
+        <div id="indicators-list">
+            <!-- Dynamic indicators will be appended here -->
+        </div>
+
+        <div class="add-indicator-wrapper">
+            <div class="input-group" style="flex-direction: row; align-items: center; gap: 1rem;">
+                <label>Add Indicator:</label>
+                <select id="indicatorSelect" class="small-input" style="width: 150px;">
+                    <option value="" disabled selected>Select...</option>
+                    <option value="RSI">Relative Strength Index (RSI)</option>
+                    <option value="MACD">MACD</option>
+                    <option value="Volume">Volume</option>
+                </select>
+                <button class="btn" style="padding: 0.5rem 1rem; font-size: 0.9rem;"
+                    onclick="handleAddIndicator()">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let activeIndicators = []; // Stores { id, type, instance, settings, elId }
+        let diffGeneration = 0; // Generation counter to prevent race conditions
+
+        /**
+         * Fetch candle data from the REST API
+         */
+        const getData = async () => {
+            const symbol = document.getElementById('symbol').value;
+            const resolution = document.getElementById('resolution').value;
+            const rangeFrom = document.getElementById('rangeFrom').value;
+            const rangeTo = document.getElementById('rangeTo').value;
+
+            const url = `http://localhost:3000/history?symbol=${encodeURIComponent(symbol)}&resolution=${resolution}&date_format=1&range_from=${rangeFrom}&range_to=${rangeTo}&cont_flag=1`;
+
+            const response = await fetch(url);
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            if (data.s !== 'ok') {
+                throw new Error(data.message || 'API returned error status');
+            }
+
+            return data;
+        };
+
+        /**
+         * Transform Fyers API response to TradingView format
+         * Fyers returns: { s: 'ok', candles: [[t, o, h, l, c, v], ...] }
+         * TradingView expects: [{ time: timestamp, open, high, low, close }, ...]
+         */
+        const transformData = (apiResponse, rangeFrom, rangeTo) => {
+            if (!apiResponse.candles || !Array.isArray(apiResponse.candles)) {
+                throw new Error('Invalid API response: missing candles array');
+            }
+
+            const candleArray = apiResponse.candles.map(candle => {
+                const [timestamp, open, high, low, close, volume] = candle;
+
+                return {
+                    time: timestamp, // Unix timestamp in seconds
+                    open: parseFloat(open),
+                    high: parseFloat(high),
+                    low: parseFloat(low),
+                    close: parseFloat(close),
+                    volume: parseFloat(volume || 0),
+                    sma: candle[6] ? parseFloat(candle[6]) : undefined,
+                    ema: candle[7] ? parseFloat(candle[7]) : undefined,
+                    long: candle[8] ? true : undefined,
+                    short: candle[9] ? true : undefined
+                };
+            });
+
+            // Filter candles:
+            // 1. Must be within 9:15 AM - 3:30 PM IST
+            // 2. Must be within selected rangeFrom and rangeTo (inclusive)
+            const filteredCandles = candleArray.filter(candle => {
+                const date = new Date(candle.time * 1000);
+                // Get IST components
+                const formatter = new Intl.DateTimeFormat('en-US', {
+                    timeZone: 'Asia/Kolkata',
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit', hour12: false
+                });
+                const parts = formatter.formatToParts(date);
+                const istParts = {};
+                parts.forEach(p => istParts[p.type] = p.value);
+
+                const hours = parseInt(istParts.hour);
+                const minutes = parseInt(istParts.minute);
+                const timeInMinutes = hours * 60 + minutes;
+
+                const marketOpenTime = 9 * 60 + 15; // 9:15 AM
+                const marketCloseTime = 15 * 60 + 30; // 3:30 PM
+
+                // Check if candle is within market hours
+                const isMarketHours = timeInMinutes >= marketOpenTime && timeInMinutes <= marketCloseTime;
+
+                // Construct a date string from IST parts to compare with range inputs
+                const istDateStr = `${istParts.year}-${istParts.month}-${istParts.day}`;
+                const isInDateRange = istDateStr >= rangeFrom && istDateStr <= rangeTo;
+
+                return isMarketHours && isInDateRange;
+            });
+
+            // CRITICAL FIX: Sort candles by timestamp in ascending order
+            // Lightweight Charts REQUIRES data to be sorted chronologically
+            filteredCandles.sort((a, b) => a.time - b.time);
+
+            // Remove duplicate timestamps (keep first occurrence)
+            const uniqueCandles = [];
+            const seenTimes = new Set();
+
+            for (const candle of filteredCandles) {
+                if (!seenTimes.has(candle.time)) {
+                    uniqueCandles.push(candle);
+                    seenTimes.add(candle.time);
+                }
+            }
+
+            console.log(`📊 Filtered Candles (9:15 AM - 3:30 PM IST, range ${rangeFrom} to ${rangeTo}): ${filteredCandles.length}`);
+            console.log(`✅ Unique Sorted Candles: ${uniqueCandles.length}`);
+            return uniqueCandles;
+        };
+
+
+
+        /**
+         * Show error message
+         */
+        const showError = (message) => {
+            const errorEl = document.getElementById('errorMessage');
+            errorEl.textContent = `❌ Error: ${message}`;
+            errorEl.classList.add('active');
+
+            setTimeout(() => {
+                errorEl.classList.remove('active');
+            }, 5000);
+        };
+
+        /**
+         * Render the candlestick chart with robust lifecycle management
+         */
+        const renderChart = async () => {
+            // INCREMENT GENERATION: This invalidates any pending async operations from previous runs
+            const currentGen = ++diffGeneration;
+
+            const loadingEl = document.getElementById('loading');
+            const loadBtn = document.getElementById('loadBtn');
+            const chartEl = document.getElementById('tvchart');
+            const errorEl = document.getElementById('errorMessage');
+
+            try {
+                // 1. CLEANUP PHASE
+                // Stop observing resize to prevent callbacks on dead objects
+                if (window.resizeObserver) {
+                    window.resizeObserver.disconnect();
+                }
+
+                // Explicitly remove and nullify existing charts
+                if (chart) {
+                    try { chart.remove(); } catch (e) { }
+                    chart = null;
+                }
+
+                // Cleanup indicator INSTANCES but keep metadata/UI
+                activeIndicators.forEach(ind => {
+                    if (ind.instance) {
+                        try { ind.instance.chart.remove(); } catch (e) { }
+                        ind.instance = null;
+                    }
+                });
+
+                candleSeries = null;
+
+                // Show loading state
+                loadingEl.classList.add('active');
+                loadBtn.disabled = true;
+                chartEl.style.opacity = '0.3';
+
+                // 2. DATA FETCH PHASE
+                const apiData = await getData();
+
+                // CHECK GENERATION: If user clicked load again while fetching, abort this run
+                if (currentGen !== diffGeneration) {
+                    console.log('🚫 Render aborted: simpler generation superseded');
+                    return;
+                }
+
+                // Transform data
+                const rangeFrom = document.getElementById('rangeFrom').value;
+                const rangeTo = document.getElementById('rangeTo').value;
+                klinedata = transformData(apiData, rangeFrom, rangeTo);
+
+                if (klinedata.length === 0) {
+                    throw new Error('No data available for the selected parameters');
+                }
+
+                // 3. CHART CREATION PHASE
+                const chartProperties = {
+                    layout: {
+                        background: { color: 'transparent' },
+                        textColor: '#94a3b8',
+                    },
+                    grid: {
+                        vertLines: { color: 'rgba(148, 163, 184, 0.1)' },
+                        horzLines: { color: 'rgba(148, 163, 184, 0.1)' },
+                    },
+                    crosshair: {
+                        mode: LightweightCharts.CrosshairMode.Normal,
+                    },
+                    rightPriceScale: {
+                        borderColor: 'rgba(148, 163, 184, 0.2)',
+                    },
+                    timeScale: {
+                        borderColor: 'rgba(148, 163, 184, 0.2)',
+                        timeVisible: true,
+                        secondsVisible: false,
+                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                            const date = new Date(time * 1000);
+
+                            // For day/month labels (tickMarkType 0-2)
+                            if (tickMarkType <= 2) {
+                                return new Intl.DateTimeFormat('en-US', {
+                                    timeZone: 'Asia/Kolkata',
+                                    day: '2-digit',
+                                    month: 'short'
+                                }).format(date);
+                            }
+
+                            // For time labels (tickMarkType 3+) - show in "DD MMM HH:mm" format
+                            // This matches the crosshair tooltip format
+                            return new Intl.DateTimeFormat('en-US', {
+                                timeZone: 'Asia/Kolkata',
+                                day: '2-digit',
+                                month: 'short',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: false
+                            }).format(date);
+                        },
+                    },
+                    localization: {
+                        locale: 'en-IN',
+                        timeFormatter: (time) => {
+                            // Crosshair tooltip formatter - matches X-axis format
+                            const date = new Date(time * 1000);
+                            return new Intl.DateTimeFormat('en-US', {
+                                timeZone: 'Asia/Kolkata',
+                                day: '2-digit',
+                                month: 'short',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: false
+                            }).format(date);
+                        },
+                    },
+                    watermark: {
+                        visible: true,
+                        fontSize: 48,
+                        horzAlign: 'center',
+                        vertAlign: 'center',
+                        color: 'rgba(99, 102, 241, 0.1)',
+                        text: document.getElementById('symbol').value,
+                    },
+                };
+
+                // Create new chart instance
+                chart = LightweightCharts.createChart(chartEl, chartProperties);
+
+                // Add candlestick series
+                candleSeries = chart.addCandlestickSeries({
+                    upColor: '#10b981',
+                    downColor: '#ef4444',
+                    borderUpColor: '#10b981',
+                    borderDownColor: '#ef4444',
+                    wickUpColor: '#10b981',
+                    wickDownColor: '#ef4444',
+                });
+
+                candleSeries.setData(klinedata);
+
+                // Add SMA/EMA indicators
+                addSMAIndicator(chart, klinedata);
+                addEMAIndicator(chart, klinedata);
+                addTradeMarkers(candleSeries, klinedata);
+
+                // Add default Volume Overlay
+                addVolumeOverlay(chart, klinedata, { showSma: true, smaPeriod: 20 });
+
+                // ========== RENDER ACTIVE INDICATORS ==========
+                renderActiveIndicators();
+
+                // ========== SYNCHRONIZE ==========
+                const setupSync = () => {
+                    if (currentGen !== diffGeneration) return;
+
+                    const activeInstances = activeIndicators.map(i => i.instance).filter(Boolean);
+
+                    if (chart && activeInstances.length > 0) {
+                        try {
+                            synchronizeCharts(chart, candleSeries, activeInstances);
+
+                            // Range sync
+                            const range = chart.timeScale().getVisibleLogicalRange();
+                            activeInstances.forEach(ind => {
+                                if (ind.chart) ind.chart.timeScale().setVisibleLogicalRange(range);
+                            });
+                        } catch (e) {
+                            console.warn('Sync failed', e);
+                        }
+                    }
+                };
+
+                setTimeout(setupSync, 50);
+
+                // Re-connect Resize Observer
+                if (window.resizeObserver) {
+                    window.resizeObserver.observe(chartEl);
+                    // Observe any active indicator containers
+                    activeIndicators.forEach(ind => {
+                        const el = document.getElementById(ind.elId);
+                        if (el) window.resizeObserver.observe(el);
+                    });
+                }
+
+                console.log(`✅ Chart loaded successfully with ${klinedata.length} candles`);
+
+            } catch (error) {
+                console.error('Chart rendering error:', error);
+                showError(error.message || 'Failed to load chart data');
+            } finally {
+                // Hide loading state
+                loadingEl.classList.remove('active');
+                loadBtn.disabled = false;
+                chartEl.style.opacity = '1';
+            }
+        };
+
+        let candleSeries = null;
+
+        // Static reference for data
+        let klinedata = [];
+
+        // Global Resize Observer to handle responsive layout without leaks
+        window.resizeObserver = new ResizeObserver(() => {
+            const chartEl = document.getElementById('tvchart');
+
+            if (chart && chartEl) {
+                try { chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight }); } catch (e) { }
+            }
+
+            // Resize active indicators
+            activeIndicators.forEach(ind => {
+                const el = document.getElementById(ind.elId);
+                if (ind.instance && ind.instance.chart && el) {
+                    try { ind.instance.chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }); } catch (e) { }
+                }
+            });
+        });
+
+
+        /**
+         * Add a new indicator to the list
+         */
+        const handleAddIndicator = () => {
+            const type = document.getElementById('indicatorSelect').value;
+            if (!type) return;
+
+            const id = 'ind_' + Date.now() + Math.random().toString(36).substr(2, 5);
+            const elId = 'chart_' + id;
+
+            // Default settings based on type
+            let settings = {};
+            if (type === 'RSI') {
+                settings = { rsiPeriod: 14, showSma: false, smaPeriod: 14, smaColor: '#f59e0b' };
+            } else if (type === 'MACD') {
+                settings = { fastLength: 12, slowLength: 26, signalLength: 9 };
+            } else if (type === 'Volume') {
+                settings = { showSma: true, smaPeriod: 20 };
+            }
+
+            // Add to state
+            activeIndicators.push({ id, type, settings, elId, instance: null });
+
+            // Create DOM
+            const list = document.getElementById('indicators-list');
+            const card = document.createElement('div');
+            card.className = 'indicator-card';
+            card.id = 'card_' + id;
+            card.innerHTML = `
+                <div class="indicator-header-row">
+                    <div class="indicator-title-group">
+                        <div class="indicator-title">📊 ${type}</div>
+                    </div>
+                    <div class="remove-indicator-btn" onclick="removeIndicator('${id}')" title="Remove">✕</div>
+                </div>
+                <!-- Dynamic Settings Controls would go here, simplified for now -->
+                 <div class="indicator-settings">
+                     ${getSettingsHTML(type, id, settings)}
+                 </div>
+                <div id="${elId}" class="chart-wrapper"></div>
+            `;
+            list.appendChild(card);
+
+            // Observe resize
+            if (window.resizeObserver) window.resizeObserver.observe(document.getElementById(elId));
+
+            // Render if data exists
+            if (klinedata.length > 0) {
+                renderSingleIndicator(activeIndicators[activeIndicators.length - 1]);
+
+                // Resync
+                if (chart) {
+                    const activeInstances = activeIndicators.map(i => i.instance).filter(Boolean);
+                    synchronizeCharts(chart, candleSeries, activeInstances);
+                    const range = chart.timeScale().getVisibleLogicalRange();
+                    activeInstances.forEach(i => i.chart.timeScale().setVisibleLogicalRange(range));
+                }
+            }
+        };
+
+        /**
+         * Generate HTML for settings based on type
+         */
+        const getSettingsHTML = (type, id, settings) => {
+            if (type === 'RSI') {
+                return `
+                   <div class="settings-group">
+                        <label>Length</label>
+                        <input type="number" class="small-input" value="${settings.rsiPeriod}" onchange="updateIndicator('${id}', 'rsiPeriod', this.value)">
+                   </div>
+                   <div class="settings-group">
+                        <label class="checkbox-wrap">
+                            <input type="checkbox" ${settings.showSma ? 'checked' : ''} 
+                                onchange="updateIndicator('${id}', 'showSma', this.checked); document.getElementById('sma-controls-${id}').style.display = this.checked ? 'flex' : 'none'"> Enable SMA
+                        </label>
+                   </div>
+                   <div id="sma-controls-${id}" class="settings-group" style="display: ${settings.showSma ? 'flex' : 'none'}; gap: 0.75rem; border-left: 1px solid rgba(255,255,255,0.1); padding-left: 1rem;">
+                        <label>SMA Length</label>
+                        <input type="number" class="small-input" value="${settings.smaPeriod || 14}" onchange="updateIndicator('${id}', 'smaPeriod', this.value)">
+                        <label>Color</label>
+                        <input type="color" class="color-input" value="${settings.smaColor || '#f59e0b'}" onchange="updateIndicator('${id}', 'smaColor', this.value)">
+                   </div>
+                `;
+            } else if (type === 'MACD') {
+                return `
+                   <div class="settings-group">
+                        <label>Fast</label>
+                        <input type="number" class="small-input" value="${settings.fastLength}" onchange="updateIndicator('${id}', 'fastLength', this.value)">
+                   </div>
+                   <div class="settings-group">
+                        <label>Slow</label>
+                        <input type="number" class="small-input" value="${settings.slowLength}" onchange="updateIndicator('${id}', 'slowLength', this.value)">
+                   </div>
+                   <div class="settings-group">
+                        <label>Signal</label>
+                        <input type="number" class="small-input" value="${settings.signalLength}" onchange="updateIndicator('${id}', 'signalLength', this.value)">
+                   </div>
+                `;
+            } else if (type === 'Volume') {
+                return `
+                   <div class="settings-group">
+                        <label class="checkbox-wrap">
+                            <input type="checkbox" ${settings.showSma ? 'checked' : ''} onchange="updateIndicator('${id}', 'showSma', this.checked)"> Enable SMA
+                        </label>
+                   </div>
+                   <div class="settings-group" style="display: ${settings.showSma ? 'flex' : 'none'}">
+                        <label>Length</label>
+                        <input type="number" class="small-input" value="${settings.smaPeriod}" onchange="updateIndicator('${id}', 'smaPeriod', this.value)">
+                   </div>
+                `;
+            }
+            return '';
+        };
+
+        /**
+         * Update an indicator setting
+         */
+        const updateIndicator = (id, key, value) => {
+            const ind = activeIndicators.find(i => i.id === id);
+            if (!ind) return;
+
+            // Parse value
+            // Parse value
+            if (key === 'showSma') {
+                ind.settings[key] = value;
+            } else if (key === 'smaColor') {
+                ind.settings[key] = value;
+            } else {
+                ind.settings[key] = parseInt(value);
+            }
+
+            // Re-render
+            renderSingleIndicator(ind);
+
+            // CRITICAL: Re-sync charts to prevent "Object is disposed" errors
+            // This updates the closure in indicators.js with the NEW chart instances
+            if (chart && candleSeries) {
+                const activeInstances = activeIndicators.map(i => i.instance).filter(Boolean);
+                try {
+                    synchronizeCharts(chart, candleSeries, activeInstances);
+
+                    // Also sync time range to match main chart
+                    const range = chart.timeScale().getVisibleLogicalRange();
+                    if (range && ind.instance && ind.instance.chart) {
+                        try { ind.instance.chart.timeScale().setVisibleLogicalRange(range); } catch (e) { }
+                    }
+                } catch (e) { console.warn('Resync failed after update', e); }
+            }
+        };
+
+        /**
+         * Remove an indicator
+         */
+        const removeIndicator = (id) => {
+            const index = activeIndicators.findIndex(i => i.id === id);
+            if (index === -1) return;
+
+            const ind = activeIndicators[index];
+            if (ind.instance) {
+                try { ind.instance.chart.remove(); } catch (e) { }
+            }
+
+            // Remove DOM
+            const card = document.getElementById('card_' + id);
+            if (card) {
+                // Unobserve resize
+                const wrapper = document.getElementById('chart_' + id);
+                if (wrapper && window.resizeObserver) window.resizeObserver.unobserve(wrapper);
+                card.remove();
+            }
+
+            // Remove from state
+            activeIndicators.splice(index, 1);
+
+            // Re-sync remaining charts to effectively unsubscribe the dead one
+            if (chart && candleSeries) {
+                const activeInstances = activeIndicators.map(i => i.instance).filter(Boolean);
+                // We must call this to update the closure in indicators.js with the NEW list of charts
+                // This prevents the sync handlers from trying to talk to the disposed chart
+                try {
+                    synchronizeCharts(chart, candleSeries, activeInstances);
+                } catch (e) { console.warn('Re-sync failed on remove', e); }
+            }
+        };
+
+        /**
+         * Render all active indicators
+         */
+        const renderActiveIndicators = () => {
+            activeIndicators.forEach(ind => renderSingleIndicator(ind));
+        };
+
+        /**
+         * Render a single indicator
+         */
+        const renderSingleIndicator = (ind) => {
+            if (!klinedata || klinedata.length === 0) return;
+
+            const el = document.getElementById(ind.elId);
+            if (!el) return;
+
+            // Cleanup existing instance if any (for refetch/update)
+            // But reuse container
+            if (ind.instance) {
+                try { ind.instance.chart.remove(); } catch (e) { }
+            }
+
+            // Check generation safety? No, this is synchronous mostly, but called from async renderChart
+
+            try {
+                if (ind.type === 'RSI') {
+                    // Safety check for data length vs period
+                    if (klinedata.length <= ind.settings.rsiPeriod) {
+                        console.warn('Data too short for RSI period');
+                    }
+                    const rsiData = calculateRSI(klinedata, ind.settings.rsiPeriod);
+                    ind.instance = createRSIChart(el, rsiData, { ...ind.settings, fullData: klinedata });
+                } else if (ind.type === 'MACD') {
+                    if (klinedata.length <= ind.settings.slowLength) {
+                        console.warn('Data too short for MACD period');
+                    }
+                    const macdData = calculateMACD(klinedata, ind.settings);
+                    ind.instance = createMACDChart(el, macdData, { ...ind.settings, fullData: klinedata });
+                } else if (ind.type === 'Volume') {
+                    ind.instance = createVolumeChart(el, klinedata, { ...ind.settings, fullData: klinedata });
+                }
+            } catch (e) {
+                console.error('Failed to render indicator', ind.type, e);
+            }
+        };
+
+        window.addEventListener('load', () => {
+            renderChart();
+        });
+    </script>
+</body>
+
+</html>
