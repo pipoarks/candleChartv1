@@ -14,8 +14,10 @@
     <!-- Indicators Module -->
     <script src="indicators/utils.js"></script>
     <script src="indicators/rsi.js"></script>
+    <script src="indicators/advanced_rsi.js"></script>
     <script src="indicators/macd.js"></script>
     <script src="indicators/volume.js"></script>
+    <script src="indicators/cmf.js"></script>
     <script src="indicators/overlays.js"></script>
     <script src="indicators/sync.js"></script>
 
@@ -87,8 +89,10 @@
                 <select id="indicatorSelect" class="small-input" style="width: 150px;">
                     <option value="" disabled selected>Select...</option>
                     <option value="RSI">Relative Strength Index (RSI)</option>
+                    <option value="AdvancedRSI">Advanced RSI Indicator</option>
                     <option value="MACD">MACD</option>
                     <option value="Volume">Volume</option>
+                    <option value="CMF">Chaikin Money Flow (CMF)</option>
                 </select>
                 <button class="btn" style="padding: 0.5rem 1rem; font-size: 0.9rem;"
                     onclick="handleAddIndicator()">Add</button>
@@ -457,10 +461,20 @@
             let settings = {};
             if (type === 'RSI') {
                 settings = { rsiPeriod: 14, showSma: false, smaPeriod: 14, smaColor: '#f59e0b' };
+            } else if (type === 'AdvancedRSI') {
+                settings = {
+                    rsiPeriod: 14,
+                    rsiSource: 'close',
+                    calculateDivergence: true,
+                    maType: 'SMA',
+                    maLength: 14,
+                    bbMult: 2.0
+                };
             } else if (type === 'MACD') {
-                settings = { fastLength: 12, slowLength: 26, signalLength: 9 };
             } else if (type === 'Volume') {
                 settings = { showSma: true, smaPeriod: 20 };
+            } else if (type === 'CMF') {
+                settings = { length: 20, refColor: '#ef4444' };
             }
 
             // Add to state
@@ -526,6 +540,39 @@
                         <input type="color" class="color-input" value="${settings.smaColor || '#f59e0b'}" onchange="updateIndicator('${id}', 'smaColor', this.value)">
                    </div>
                 `;
+            } else if (type === 'AdvancedRSI') {
+                return `
+                   <div class="settings-group">
+                        <label>RSI Length</label>
+                        <input type="number" class="small-input" value="${settings.rsiPeriod}" onchange="updateIndicator('${id}', 'rsiPeriod', this.value)">
+                   </div>
+                   <div class="settings-group">
+                        <label class="checkbox-wrap">
+                            <input type="checkbox" ${settings.calculateDivergence ? 'checked' : ''} 
+                                onchange="updateIndicator('${id}', 'calculateDivergence', this.checked)"> Divergence
+                        </label>
+                   </div>
+                   <div class="settings-group">
+                        <label>MA Type</label>
+                        <select class="small-input" onchange="updateIndicator('${id}', 'maType', this.value)">
+                            <option value="None" ${settings.maType === 'None' ? 'selected' : ''}>None</option>
+                            <option value="SMA" ${settings.maType === 'SMA' ? 'selected' : ''}>SMA</option>
+                            <option value="EMA" ${settings.maType === 'EMA' ? 'selected' : ''}>EMA</option>
+                            <option value="SMMA" ${settings.maType === 'SMMA' ? 'selected' : ''}>SMMA (RMA)</option>
+                            <option value="WMA" ${settings.maType === 'WMA' ? 'selected' : ''}>WMA</option>
+                            <option value="VWMA" ${settings.maType === 'VWMA' ? 'selected' : ''}>VWMA</option>
+                            <option value="BB" ${settings.maType === 'BB' ? 'selected' : ''}>SMA + Bollinger Bands</option>
+                        </select>
+                   </div>
+                   <div class="settings-group" style="display: ${settings.maType !== 'None' ? 'flex' : 'none'}">
+                        <label>MA Length</label>
+                        <input type="number" class="small-input" value="${settings.maLength}" onchange="updateIndicator('${id}', 'maLength', this.value)">
+                   </div>
+                   <div class="settings-group" style="display: ${settings.maType === 'BB' ? 'flex' : 'none'}">
+                        <label>BB Mult</label>
+                        <input type="number" step="0.1" class="small-input" value="${settings.bbMult}" onchange="updateIndicator('${id}', 'bbMult', this.value)">
+                   </div>
+                `;
             } else if (type === 'MACD') {
                 return `
                    <div class="settings-group">
@@ -553,6 +600,15 @@
                         <input type="number" class="small-input" value="${settings.smaPeriod}" onchange="updateIndicator('${id}', 'smaPeriod', this.value)">
                    </div>
                 `;
+            } else if (type === 'CMF') {
+                return `
+                   <div class="settings-group">
+                        <label>Length</label>
+                        <input type="number" class="small-input" value="${settings.length}" onchange="updateIndicator('${id}', 'length', this.value)">
+                        <label style="margin-left: 1rem;">Ref Color</label>
+                        <input type="color" class="color-input" value="${settings.refColor || '#ef4444'}" onchange="updateIndicator('${id}', 'refColor', this.value)">
+                   </div>
+                `;
             }
             return '';
         };
@@ -566,10 +622,12 @@
 
             // Parse value
             // Parse value
-            if (key === 'showSma') {
+            if (key === 'showSma' || key === 'calculateDivergence') {
                 ind.settings[key] = value;
-            } else if (key === 'smaColor') {
+            } else if (key === 'smaColor' || key === 'maType' || key === 'refColor') {
                 ind.settings[key] = value;
+            } else if (key === 'bbMult') {
+                ind.settings[key] = parseFloat(value);
             } else {
                 ind.settings[key] = parseInt(value);
             }
@@ -660,6 +718,9 @@
                     }
                     const rsiData = calculateRSI(klinedata, ind.settings.rsiPeriod);
                     ind.instance = createRSIChart(el, rsiData, { ...ind.settings, fullData: klinedata });
+                } else if (ind.type === 'AdvancedRSI') {
+                    const advRsiData = calculateAdvancedRSI(klinedata, ind.settings);
+                    ind.instance = createAdvancedRSIChart(el, advRsiData, { ...ind.settings, fullData: klinedata });
                 } else if (ind.type === 'MACD') {
                     if (klinedata.length <= ind.settings.slowLength) {
                         console.warn('Data too short for MACD period');
@@ -668,6 +729,9 @@
                     ind.instance = createMACDChart(el, macdData, { ...ind.settings, fullData: klinedata });
                 } else if (ind.type === 'Volume') {
                     ind.instance = createVolumeChart(el, klinedata, { ...ind.settings, fullData: klinedata });
+                } else if (ind.type === 'CMF') {
+                    const cmfData = calculateCMF(klinedata, ind.settings.length);
+                    ind.instance = createCMFChart(el, cmfData, { ...ind.settings, fullData: klinedata });
                 }
             } catch (e) {
                 console.error('Failed to render indicator', ind.type, e);
