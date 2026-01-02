@@ -18,6 +18,7 @@
     <script src="indicators/macd.js"></script>
     <script src="indicators/volume.js"></script>
     <script src="indicators/cmf.js"></script>
+    <script src="indicators/cvd.js"></script>
     <script src="indicators/overlays.js"></script>
     <script src="indicators/sync.js"></script>
 
@@ -93,6 +94,7 @@
                     <option value="MACD">MACD</option>
                     <option value="Volume">Volume</option>
                     <option value="CMF">Chaikin Money Flow (CMF)</option>
+                    <option value="CVD">Cumulative Volume Delta (CVD)</option>
                 </select>
                 <button class="btn" style="padding: 0.5rem 1rem; font-size: 0.9rem;"
                     onclick="handleAddIndicator()">Add</button>
@@ -475,6 +477,13 @@
                 settings = { showSma: true, smaPeriod: 20 };
             } else if (type === 'CMF') {
                 settings = { length: 20, refColor: '#ef4444' };
+            } else if (type === 'CVD') {
+                const currentResolution = document.getElementById('resolution').value;
+                settings = {
+                    chartTimeframe: currentResolution,
+                    anchorPeriod: '1D',
+                    showUnderlyingCandles: false
+                };
             }
 
             // Add to state
@@ -609,6 +618,19 @@
                         <input type="color" class="color-input" value="${settings.refColor || '#ef4444'}" onchange="updateIndicator('${id}', 'refColor', this.value)">
                    </div>
                 `;
+            } else if (type === 'CVD') {
+                return `
+                   <div class="settings-group">
+                        <label>Anchor Period</label>
+                        <select class="small-input" onchange="updateIndicator('${id}', 'anchorPeriod', this.value)">
+                            <option value="1H" ${settings.anchorPeriod === '1H' ? 'selected' : ''}>1 Hour</option>
+                            <option value="4H" ${settings.anchorPeriod === '4H' ? 'selected' : ''}>4 Hours</option>
+                            <option value="1D" ${settings.anchorPeriod === '1D' ? 'selected' : ''}>1 Day</option>
+                            <option value="1W" ${settings.anchorPeriod === '1W' ? 'selected' : ''}>1 Week</option>
+                        </select>
+                        <label style="margin-left: 1rem;">Timeframe: ${settings.chartTimeframe}min</label>
+                   </div>
+                `;
             }
             return '';
         };
@@ -624,7 +646,7 @@
             // Parse value
             if (key === 'showSma' || key === 'calculateDivergence') {
                 ind.settings[key] = value;
-            } else if (key === 'smaColor' || key === 'maType' || key === 'refColor') {
+            } else if (key === 'smaColor' || key === 'maType' || key === 'refColor' || key === 'anchorPeriod') {
                 ind.settings[key] = value;
             } else if (key === 'bbMult') {
                 ind.settings[key] = parseFloat(value);
@@ -732,6 +754,33 @@
                 } else if (ind.type === 'CMF') {
                     const cmfData = calculateCMF(klinedata, ind.settings.length);
                     ind.instance = createCMFChart(el, cmfData, { ...ind.settings, fullData: klinedata });
+                } else if (ind.type === 'CVD') {
+                    // Fetch 1-minute data for CVD calculation
+                    const symbol = document.getElementById('symbol').value;
+                    const rangeFrom = document.getElementById('rangeFrom').value;
+                    const rangeTo = document.getElementById('rangeTo').value;
+
+                    fetchOneMinuteData(symbol, rangeFrom, rangeTo)
+                        .then(oneMinData => {
+                            const cvdData = calculateCVD(klinedata, oneMinData, ind.settings);
+                            ind.instance = createCVDChart(el, cvdData, { ...ind.settings, fullData: klinedata });
+
+                            // Re-sync after async render
+                            if (chart && candleSeries) {
+                                const activeInstances = activeIndicators.map(i => i.instance).filter(Boolean);
+                                try {
+                                    synchronizeCharts(chart, candleSeries, activeInstances);
+                                    const range = chart.timeScale().getVisibleLogicalRange();
+                                    if (range && ind.instance && ind.instance.chart) {
+                                        ind.instance.chart.timeScale().setVisibleLogicalRange(range);
+                                    }
+                                } catch (e) { console.warn('CVD sync failed', e); }
+                            }
+                        })
+                        .catch(err => {
+                            console.error('Failed to calculate CVD:', err);
+                            el.innerHTML = `<div style="color: #ef4444; padding: 1rem;">❌ Failed to load CVD: ${err.message}</div>`;
+                        });
                 }
             } catch (e) {
                 console.error('Failed to render indicator', ind.type, e);

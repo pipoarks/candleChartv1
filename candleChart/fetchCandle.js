@@ -37,7 +37,7 @@ app.get('/history', async (req, res) => {
       });
     }
 
-    const FYERS_TOKEN = "E3D5D0NFAV-100:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcFZoczZEVVR1TkdoSnhGYmJObkZOS18tOWpYS29MMkdrSld6Ym9ZN3RJNGZhV09lY2wyTUNXeFVWdjNwWXpfSExwV25pYVUtRktXWjVGbmlxY2s5U1VCZkF1aTMtWmVuc0xHNVE1cVcxM19ET3J5TT0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiI3MzA1Y2EyNjliNTM4ZDQxN2Y3Y2FiNTE1NjVhNDIzNDY0NzI2YTFjMzZhMzFiYTkzMjE2OTAxNCIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiWUE0NDA3NyIsImFwcFR5cGUiOjEwMCwiZXhwIjoxNzY3MzEzODAwLCJpYXQiOjE3NjcyNTA3NDYsImlzcyI6ImFwaS5meWVycy5pbiIsIm5iZiI6MTc2NzI1MDc0Niwic3ViIjoiYWNjZXNzX3Rva2VuIn0.MfFB_cxWec9IRAWSPQlxJ5q2039soNf2gF4XJol1vJ8";
+    const FYERS_TOKEN = "E3D5D0NFAV-100:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcFYwaEpXQmx3c3h4UEFMdS1yYnpGTFpoVVdfbDN2YTh6V2otZklPeUY2c2wxaVhLZnM0Rlk4N1dHTGNOV2VEQ0NSLXRiWW1IOU5uZUx4YjNPUkdKMlgyZXlvLU92YkNsNlB3aXFXcGNrQkFPeTE5WT0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiJhNTFjOTBkY2MxMWYxYThmNTNiZWMyMzgzZWY2MWJkMjMxMmI4NzkyYjAxOTk5NzhlNWU1NTk5NiIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiWUE0NDA3NyIsImFwcFR5cGUiOjEwMCwiZXhwIjoxNzY3NDAwMjAwLCJpYXQiOjE3NjczMjc4MTcsImlzcyI6ImFwaS5meWVycy5pbiIsIm5iZiI6MTc2NzMyNzgxNywic3ViIjoiYWNjZXNzX3Rva2VuIn0.ypHUBxMZ8K2JQkp2mhYXrWtVM9Zk9C_MGAhJHWwDGK8";
 
     const url =
       `https://api-t1.fyers.in/data/history` +
@@ -60,6 +60,55 @@ app.get('/history', async (req, res) => {
   } catch (err) {
     console.error('Fyers API error:', err);
     res.status(500).json({ error: 'Failed to fetch Fyers data' });
+  }
+});
+
+
+/**
+ * Fyers 1-Minute Historical Data Proxy (for CVD calculations)
+ * Example:
+ * /history-1min?symbol=NSE:SBIN-EQ&date_format=1&range_from=2025-01-01&range_to=2025-01-31&cont_flag=1
+ */
+app.get('/history-1min', async (req, res) => {
+  try {
+    const {
+      symbol,
+      date_format = "1",
+      range_from = "2025-12-31",
+      range_to = "2025-12-31",
+      cont_flag = "1"
+    } = req.query;
+
+    if (!symbol || !range_from || !range_to) {
+      return res.status(400).json({
+        error: 'Missing required query parameters'
+      });
+    }
+
+    const FYERS_TOKEN = "E3D5D0NFAV-100:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcFYwaEpXQmx3c3h4UEFMdS1yYnpGTFpoVVdfbDN2YTh6V2otZklPeUY2c2wxaVhLZnM0Rlk4N1dHTGNOV2VEQ0NSLXRiWW1IOU5uZUx4YjNPUkdKMlgyZXlvLU92YkNsNlB3aXFXcGNrQkFPeTE5WT0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiJhNTFjOTBkY2MxMWYxYThmNTNiZWMyMzgzZWY2MWJkMjMxMmI4NzkyYjAxOTk5NzhlNWU1NTk5NiIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiWUE0NDA3NyIsImFwcFR5cGUiOjEwMCwiZXhwIjoxNzY3NDAwMjAwLCJpYXQiOjE3NjczMjc4MTcsImlzcyI6ImFwaS5meWVycy5pbiIsIm5iZiI6MTc2NzMyNzgxNywic3ViIjoiYWNjZXNzX3Rva2VuIn0.ypHUBxMZ8K2JQkp2mhYXrWtVM9Zk9C_MGAhJHWwDGK8";
+
+    // Force resolution to 1 minute for CVD calculations
+    const url =
+      `https://api-t1.fyers.in/data/history` +
+      `?symbol=${symbol}` +
+      `&resolution=1` +  // Hardcoded to 1 minute
+      `&date_format=${date_format || 1}` +
+      `&range_from=${range_from}` +
+      `&range_to=${range_to}` +
+      `&cont_flag=${cont_flag || 1}`;
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: FYERS_TOKEN
+      }
+    });
+
+    const data = await response.json();
+    res.json(data);
+
+  } catch (err) {
+    console.error('Fyers API error (1-min):', err);
+    res.status(500).json({ error: 'Failed to fetch Fyers 1-minute data' });
   }
 });
 
