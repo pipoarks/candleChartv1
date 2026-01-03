@@ -19,6 +19,10 @@
     <script src="indicators/volume.js"></script>
     <script src="indicators/cmf.js"></script>
     <script src="indicators/cvd.js"></script>
+    <script src="indicators/frvp-settings.js"></script>
+    <script src="indicators/frvp-calculator.js"></script>
+    <script src="indicators/frvp-renderer.js"></script>
+    <script src="indicators/frvp.js"></script>
     <script src="indicators/overlays.js"></script>
     <script src="indicators/sync.js"></script>
 
@@ -72,6 +76,17 @@
             <div class="error-message" id="errorMessage"></div>
         </div>
 
+        <!-- Drawing Tools Toolbar -->
+        <div class="toolbar">
+            <button class="tool-btn" id="frvpToolBtn" onclick="activateFRVPTool()" title="Fixed Volume Profile Tool">
+                📊 FRVP Tool
+            </button>
+            <div id="frvpToolStatus" class="tool-status"></div>
+
+            <!-- FRVP Overlays Control Panel -->
+            <div id="frvpControlPanel" class="frvp-control-panel"></div>
+        </div>
+
         <div class="chart-container">
             <div class="loading" id="loading">
                 <div class="spinner"></div>
@@ -105,6 +120,17 @@
     <script>
         let chart = null;
         let activeIndicators = []; // Stores { id, type, instance, settings, elId }
+
+        // FRVP Tool State
+        let frvpToolState = {
+            active: false,
+            firstAnchor: null,
+            secondAnchor: null,
+            instances: [],  // Array of placed FRVP overlays
+            clickHandler: null,
+            editingOverlayId: null  // ID of overlay being edited
+        };
+        const frvpAnchors = []; // Track active anchors (Moved to top)
         let diffGeneration = 0; // Generation counter to prevent race conditions
 
         /**
@@ -227,6 +253,37 @@
             }, 5000);
         };
 
+        // --- FRVP State Management Functions ---
+        function resetFRVPState() {
+            // 1. Remove DOM Anchors from Document
+            frvpAnchors.forEach(anchor => {
+                if (anchor && anchor.parentNode) anchor.parentNode.removeChild(anchor);
+            });
+            frvpAnchors.length = 0; // Clear array
+
+            // 2. Remove Canvas overlays
+            document.querySelectorAll('.frvp-histogram-canvas').forEach(el => el.remove());
+
+            console.log('🧹 FRVP State Cleaned');
+        }
+
+        async function restoreFRVPState(savedConfigs) {
+            if (!savedConfigs || savedConfigs.length === 0) return;
+            console.log('♻️ Restoring FRVP Overlays:', savedConfigs.length);
+
+            frvpToolState.instances = []; // Ensure fresh start
+
+            for (const config of savedConfigs) {
+                try {
+                    // Ensure times exist in new data range or handle gracefully
+                    await renderFRVPOverlay(config.startTime, config.endTime, config.id, config.config);
+                } catch (e) {
+                    console.warn('Failed to restore FRVP overlay:', config.id, e);
+                }
+            }
+            updateFRVPControlPanel();
+        }
+
         /**
          * Render the candlestick chart with robust lifecycle management
          */
@@ -241,6 +298,15 @@
 
             try {
                 // 1. CLEANUP PHASE
+                // Backup existing FRVP configurations (Persistence)
+                const savedFRVPConfigs = frvpToolState.instances.map(i => ({
+                    id: i.id,
+                    startTime: i.startTime,
+                    endTime: i.endTime,
+                    config: i.config
+                }));
+                resetFRVPState(); // Clean old DOM elements and arrays
+
                 // Stop observing resize to prevent callbacks on dead objects
                 if (window.resizeObserver) {
                     window.resizeObserver.disconnect();
@@ -288,21 +354,21 @@
                 // 3. CHART CREATION PHASE
                 const chartProperties = {
                     layout: {
-                        background: { color: 'transparent' },
-                        textColor: '#94a3b8',
+                        background: { color: '#ffffff' }, // White background
+                        textColor: '#333333',
                     },
                     grid: {
-                        vertLines: { color: 'rgba(148, 163, 184, 0.1)' },
-                        horzLines: { color: 'rgba(148, 163, 184, 0.1)' },
+                        vertLines: { color: 'rgba(148, 163, 184, 0.15)' }, // More visible grid
+                        horzLines: { color: 'rgba(148, 163, 184, 0.15)' },
                     },
                     crosshair: {
                         mode: LightweightCharts.CrosshairMode.Normal,
                     },
                     rightPriceScale: {
-                        borderColor: 'rgba(148, 163, 184, 0.2)',
+                        borderColor: 'rgba(148, 163, 184, 0.3)',
                     },
                     timeScale: {
-                        borderColor: 'rgba(148, 163, 184, 0.2)',
+                        borderColor: 'rgba(148, 163, 184, 0.3)',
                         timeVisible: true,
                         secondsVisible: false,
                         tickMarkFormatter: (time, tickMarkType, locale) => {
@@ -413,6 +479,12 @@
                     });
                 }
 
+                // Setup FRVP Listeners (Anchors & Histograms)
+                setupFRVPListeners();
+
+                // Restore FRVP Overlays (Persistence)
+                await restoreFRVPState(savedFRVPConfigs);
+
                 console.log(`✅ Chart loaded successfully with ${klinedata.length} candles`);
 
             } catch (error) {
@@ -425,6 +497,28 @@
                 chartEl.style.opacity = '1';
             }
         };
+
+        function setupFRVPListeners() {
+            if (!chart) return;
+
+            // 1. Anchor Sync
+            chart.timeScale().subscribeVisibleTimeRangeChange(updateAllAnchors);
+            chart.timeScale().subscribeVisibleLogicalRangeChange(updateAllAnchors);
+
+            // 2. Histogram Sync
+            const redrawHistograms = () => {
+                frvpToolState.instances.forEach(overlay => {
+                    if (overlay.canvas && overlay.profileData) {
+                        drawHistogram(overlay.canvas, overlay.profileData, overlay.startTime, overlay.endTime);
+                    }
+                });
+            };
+
+            chart.timeScale().subscribeVisibleTimeRangeChange(redrawHistograms);
+            chart.timeScale().subscribeVisibleLogicalRangeChange(redrawHistograms);
+
+            console.log('✅ FRVP Listeners Attached in setupFRVPListeners');
+        }
 
         let candleSeries = null;
 
@@ -484,6 +578,8 @@
                     anchorPeriod: '1D',
                     showUnderlyingCandles: false
                 };
+            } else if (type === 'FRVP') {
+                settings = JSON.parse(JSON.stringify(DEFAULT_FRVP_CONFIG)); // Deep clone
             }
 
             // Add to state
@@ -628,7 +724,43 @@
                             <option value="1D" ${settings.anchorPeriod === '1D' ? 'selected' : ''}>1 Day</option>
                             <option value="1W" ${settings.anchorPeriod === '1W' ? 'selected' : ''}>1 Week</option>
                         </select>
-                        <label style="margin-left: 1rem;">Timeframe: ${settings.chartTimeframe}min</label>
+                         <label style="margin-left: 1rem;">Timeframe: ${settings.chartTimeframe}min</label>
+                   </div>
+                `;
+            } else if (type === 'FRVP') {
+                return `
+                   <div class="settings-group">
+                        <label>Row Size</label>
+                        <input type="number" class="small-input" value="${settings.rowSize}" onchange="updateIndicator('${id}', 'rowSize', this.value)">
+                        <label style="margin-left: 1rem;">Volume</label>
+                        <select class="small-input" onchange="updateIndicator('${id}', 'volume', this.value)">
+                            <option value="Total" ${settings.volume === 'Total' ? 'selected' : ''}>Total</option>
+                            <option value="Up/Down" ${settings.volume === 'Up/Down' ? 'selected' : ''}>Up/Down</option>
+                            <option value="Delta" ${settings.volume === 'Delta' ? 'selected' : ''}>Delta</option>
+                        </select>
+                   </div>
+                   <div class="settings-group">
+                        <label>Value Area %</label>
+                        <input type="number" class="small-input" value="${settings.valueAreaVolume}" min="0" max="100" onchange="updateIndicator('${id}', 'valueAreaVolume', this.value)">
+                        <label style="margin-left: 1rem;">Width %</label>
+                        <input type="number" class="small-input" value="${settings.volumeProfile.width}" min="0" max="100" onchange="updateIndicator('${id}', 'volumeProfile.width', this.value)">
+                   </div>
+                   <div class="settings-group">
+                        <label>Up Volume</label>
+                        <input type="color" class="color-input" value="${settings.colors.upVolume.color}" onchange="updateIndicator('${id}', 'colors.upVolume.color', this.value)">
+                        <label style="margin-left: 1rem;">Down Volume</label>
+                        <input type="color" class="color-input" value="${settings.colors.downVolume.color}" onchange="updateIndicator('${id}', 'colors.downVolume.color', this.value)">
+                   </div>
+                   <div class="settings-group">
+                        <label class="checkbox-wrap">
+                            <input type="checkbox" ${settings.indicators.POC.enabled ? 'checked' : ''} onchange="updateIndicator('${id}', 'indicators.POC.enabled', this.checked)"> POC
+                        </label>
+                        <label class="checkbox-wrap" style="margin-left: 1rem;">
+                            <input type="checkbox" ${settings.indicators.VAH.enabled ? 'checked' : ''} onchange="updateIndicator('${id}', 'indicators.VAH.enabled', this.checked)"> VAH
+                        </label>
+                        <label class="checkbox-wrap" style="margin-left: 1rem;">
+                            <input type="checkbox" ${settings.indicators.VAL.enabled ? 'checked' : ''} onchange="updateIndicator('${id}', 'indicators.VAL.enabled', this.checked)"> VAL
+                        </label>
                    </div>
                 `;
             }
@@ -646,10 +778,26 @@
             // Parse value
             if (key === 'showSma' || key === 'calculateDivergence') {
                 ind.settings[key] = value;
-            } else if (key === 'smaColor' || key === 'maType' || key === 'refColor' || key === 'anchorPeriod') {
+            } else if (key === 'smaColor' || key === 'maType' || key === 'refColor' || key === 'anchorPeriod' || key === 'volume') {
                 ind.settings[key] = value;
             } else if (key === 'bbMult') {
                 ind.settings[key] = parseFloat(value);
+            } else if (key.includes('.')) {
+                // Handle nested settings (e.g., 'volumeProfile.width', 'colors.upVolume.color', 'indicators.POC.enabled')
+                const keys = key.split('.');
+                let current = ind.settings;
+                for (let i = 0; i < keys.length - 1; i++) {
+                    if (!current[keys[i]]) current[keys[i]] = {};
+                    current = current[keys[i]];
+                }
+                // Parse value based on type
+                if (typeof value === 'boolean') {
+                    current[keys[keys.length - 1]] = value;
+                } else if (!isNaN(value) && value !== '') {
+                    current[keys[keys.length - 1]] = parseFloat(value) || parseInt(value);
+                } else {
+                    current[keys[keys.length - 1]] = value;
+                }
             } else {
                 ind.settings[key] = parseInt(value);
             }
@@ -781,11 +929,1077 @@
                             console.error('Failed to calculate CVD:', err);
                             el.innerHTML = `<div style="color: #ef4444; padding: 1rem;">❌ Failed to load CVD: ${err.message}</div>`;
                         });
+                } else if (ind.type === 'FRVP') {
+                    // Fetch data and calculate FRVP
+                    const symbol = document.getElementById('symbol').value;
+                    const rangeFrom = document.getElementById('rangeFrom').value;
+                    const rangeTo = document.getElementById('rangeTo').value;
+
+                    calculateFRVP(klinedata, symbol, rangeFrom, rangeTo, ind.settings)
+                        .then(profileData => {
+                            ind.instance = createFRVPChart(el, profileData, ind.settings);
+
+                            // Re-sync after async render
+                            if (chart && candleSeries) {
+                                const activeInstances = activeIndicators.map(i => i.instance).filter(Boolean);
+                                try {
+                                    synchronizeCharts(chart, candleSeries, activeInstances);
+                                    const range = chart.timeScale().getVisibleLogicalRange();
+                                    if (range && ind.instance && ind.instance.chart) {
+                                        ind.instance.chart.timeScale().setVisibleLogicalRange(range);
+                                    }
+                                } catch (e) { console.warn('FRVP sync failed', e); }
+                            }
+                        })
+                        .catch(err => {
+                            console.error('Failed to calculate FRVP:', err);
+                            el.innerHTML = `<div style="color: #ef4444; padding: 1rem;">❌ Failed to load FRVP: ${err.message}</div>`;
+                        });
                 }
             } catch (e) {
                 console.error('Failed to render indicator', ind.type, e);
             }
         };
+
+        /**
+         * FRVP Tool Functions
+         */
+        function activateFRVPTool() {
+            frvpToolState.active = true;
+            frvpToolState.firstAnchor = null;
+            frvpToolState.secondAnchor = null;
+
+            // Update button state
+            document.getElementById('frvpToolBtn').classList.add('active');
+
+            // Update status
+            updateFRVPToolStatus('Click on chart to set start point...');
+
+            // Change cursor
+            document.getElementById('tvchart').style.cursor = 'crosshair';
+
+            // Subscribe to chart clicks
+            if (chart) {
+                frvpToolState.clickHandler = handleFRVPChartClick;
+                chart.subscribeClick(frvpToolState.clickHandler);
+            }
+        }
+
+        function deactivateFRVPTool() {
+            frvpToolState.active = false;
+            frvpToolState.firstAnchor = null;
+            frvpToolState.secondAnchor = null;
+
+            // Update button state
+            document.getElementById('frvpToolBtn').classList.remove('active');
+
+            // Clear status
+            updateFRVPToolStatus('');
+
+            // Reset cursor
+            document.getElementById('tvchart').style.cursor = 'default';
+
+            // Unsubscribe from clicks
+            if (chart && frvpToolState.clickHandler) {
+                chart.unsubscribeClick(frvpToolState.clickHandler);
+                frvpToolState.clickHandler = null;
+            }
+        }
+
+        function updateFRVPToolStatus(message) {
+            document.getElementById('frvpToolStatus').textContent = message;
+        }
+
+        function handleFRVPChartClick(param) {
+            if (!frvpToolState.active || !param.time) return;
+
+            if (!frvpToolState.firstAnchor) {
+                // Set first anchor
+                frvpToolState.firstAnchor = param.time;
+                addFRVPAnchorMarker(param.time, 'start');
+                updateFRVPToolStatus('Click on chart to set end point...');
+            } else {
+                // Set second anchor
+                frvpToolState.secondAnchor = param.time;
+                addFRVPAnchorMarker(param.time, 'end');
+                updateFRVPToolStatus('Calculating FRVP...');
+
+                // Ensure correct order (start < end)
+                const startTime = Math.min(frvpToolState.firstAnchor, frvpToolState.secondAnchor);
+                const endTime = Math.max(frvpToolState.firstAnchor, frvpToolState.secondAnchor);
+
+                // Check if editing existing overlay
+                if (frvpToolState.editingOverlayId) {
+                    const overlayId = frvpToolState.editingOverlayId;
+                    frvpToolState.editingOverlayId = null;
+
+                    // Remove old overlay
+                    removeFRVPOverlay(overlayId, false);
+
+                    // Create new overlay with updated range
+                    renderFRVPOverlay(startTime, endTime);
+                } else {
+                    // Calculate and render new FRVP overlay
+                    renderFRVPOverlay(startTime, endTime);
+                }
+
+                // Reset tool
+                deactivateFRVPTool();
+            }
+        }
+
+        // --- FRVP Draggable Anchors ---
+
+        function createDraggableAnchor(time, type, overlayId) {
+            const chartContainer = document.getElementById('tvchart');
+            const anchor = document.createElement('div');
+            anchor.className = 'frvp-anchor'; // style in css or inline
+            anchor.id = `anchor-${overlayId}-${type}`;
+            anchor.dataset.overlayId = overlayId;
+            anchor.dataset.type = type;
+            anchor.dataset.time = time;
+
+            // Inline Styles for functionality and basic look
+            Object.assign(anchor.style, {
+                position: 'absolute',
+                zIndex: '50',
+                cursor: 'ew-resize',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '20px',
+                height: '20px',
+                transform: 'translate(-50%, -50%)',
+                touchAction: 'none' // prevent scrolling on touch
+            });
+
+            // Visual Dot
+            const dot = document.createElement('div');
+            Object.assign(dot.style, {
+                width: '14px',
+                height: '14px',
+                borderRadius: '50%',
+                background: type === 'start' ? '#10b981' : '#ef4444',
+                border: '2px solid white',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.3)'
+            });
+            anchor.appendChild(dot);
+
+            // Label
+            const label = document.createElement('div');
+            label.innerText = type === 'start' ? 'START' : 'END';
+            Object.assign(label.style, {
+                position: 'absolute',
+                top: '-24px',
+                fontSize: '11px',
+                fontWeight: '700',
+                color: 'white',
+                background: 'rgba(0,0,0,0.75)',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                whiteSpace: 'nowrap',
+                pointerEvents: 'none'
+            });
+            anchor.appendChild(label);
+
+            chartContainer.appendChild(anchor);
+            frvpAnchors.push(anchor);
+
+            // Initial Position
+            updateAnchorPosition(anchor);
+
+            // --- Drag Interaction ---
+            let isDragging = false;
+
+            anchor.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                anchor.style.cursor = 'grabbing';
+                document.body.style.cursor = 'grabbing';
+
+                // Disable chart scrolling while dragging anchor
+                chart.applyOptions({ handleScroll: false, handleScale: false });
+
+                e.stopPropagation();
+                e.preventDefault();
+            });
+
+            // Use window listeners for smooth dragging outside element
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+
+                const rect = chartContainer.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+
+                // Convert coordinate to time
+                const timeScale = chart.timeScale();
+                const time = timeScale.coordinateToTime(x);
+
+                if (time) {
+                    anchor.dataset.time = time;
+                    updateAnchorPosition(anchor);
+                }
+            });
+
+            window.addEventListener('mouseup', (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+
+                anchor.style.cursor = 'ew-resize';
+                document.body.style.cursor = 'default';
+                chart.applyOptions({ handleScroll: true, handleScale: true });
+
+                // Trigger Update
+                const newTime = Number(anchor.dataset.time);
+                const otherType = type === 'start' ? 'end' : 'start';
+                const otherAnchor = document.getElementById(`anchor-${overlayId}-${otherType}`);
+
+                if (otherAnchor) {
+                    const otherTime = Number(otherAnchor.dataset.time);
+                    const newStart = Math.min(newTime, otherTime);
+                    const newEnd = Math.max(newTime, otherTime);
+
+                    updateFRVPOverlayRange(overlayId, newStart, newEnd);
+                }
+            });
+
+            return anchor;
+        }
+
+        function updateAnchorPosition(anchor) {
+            if (!chart) return;
+            const time = Number(anchor.dataset.time);
+            const timeScale = chart.timeScale();
+
+            // Use logical index to check visibility better if needed, 
+            // but timeToCoordinate returns null if widely off-screen sometimes.
+            // Using logicalToCoordinate is safer if we find the index.
+            let x = timeScale.timeToCoordinate(time);
+
+            // Fallback to logical search if null (offscreen or gap)
+            if (x === null && klinedata && klinedata.length > 0) {
+                const idx = klinedata.findIndex(k => k.time === time);
+                if (idx !== -1) {
+                    x = timeScale.logicalToCoordinate(idx);
+                }
+            }
+
+            if (x === null) {
+                anchor.style.display = 'none';
+            } else {
+                anchor.style.display = 'flex';
+                anchor.style.left = x + 'px';
+                anchor.style.top = '80%'; // Fixed height for anchors
+            }
+        }
+
+        // Global updater for panning/zooming
+        function updateAllAnchors() {
+            frvpAnchors.forEach(updateAnchorPosition);
+        }
+
+        async function updateFRVPOverlayRange(overlayId, startTime, endTime) {
+            // Find Overlay
+            const overlay = frvpToolState.instances.find(o => o.id === overlayId);
+            if (!overlay) return;
+
+            console.log(`🔄 Updating FRVP ${overlayId} range:`, startTime, endTime);
+
+            // 1. Recalculate Profile
+            const rangeCandles = klinedata.filter(c => c.time >= startTime && c.time <= endTime);
+            const symbol = document.getElementById('symbol').value;
+            // Format dates
+            const startDate = new Date(startTime * 1000);
+            const endDate = new Date(endTime * 1000);
+            const rangeFrom = startDate.toISOString().split('T')[0];
+            const rangeTo = endDate.toISOString().split('T')[0];
+
+            try {
+                const profileData = await calculateFRVP(rangeCandles, symbol, rangeFrom, rangeTo, overlay.config);
+
+                // 2. Update Overlay Data
+                overlay.startTime = startTime;
+                overlay.endTime = endTime;
+                overlay.profileData = profileData;
+
+                // 3. Update Visuals
+                // Remove old lines
+                overlay.lineSeries.forEach(ls => chart.removeSeries(ls.series));
+                overlay.lineSeries = [];
+
+                // Re-add lines (POC, VAH, VAL) - Refactored for reuse
+                const addLine = (key, data, name) => {
+                    if (profileData.config.indicators?.[key]?.enabled) {
+                        const s = chart.addLineSeries({
+                            color: profileData.config.indicators[key].color,
+                            lineWidth: profileData.config.indicators[key].width,
+                            lineStyle: getLineStyleConstant(profileData.config.indicators[key].lineStyle),
+                            title: `${name} (${overlayId.slice(-4)})`,
+                            lastValueVisible: false,
+                            priceLineVisible: false
+                        });
+                        s.setData([
+                            { time: startTime, value: data.priceLevel },
+                            { time: endTime, value: data.priceLevel }
+                        ]);
+                        overlay.lineSeries.push({ type: name, series: s });
+                    }
+                };
+
+                addLine('POC', profileData.poc, 'POC');
+                addLine('VAH', profileData.vah, 'VAH');
+                addLine('VAL', profileData.val, 'VAL');
+
+                // Re-draw Histogram
+                if (overlay.canvas) {
+                    drawHistogram(overlay.canvas, profileData, startTime, endTime);
+                }
+
+                console.log('✅ FRVP range updated successfully');
+
+            } catch (err) {
+                console.error('Failed to update FRVP range:', err);
+            }
+        }
+        // --- End Draggable Anchors ---
+
+        // Replaced old marker function
+        function addFRVPAnchorMarker(time, type) {
+            // No-op for now, as we use DOM anchors
+        }
+
+        async function renderFRVPOverlay(startTime, endTime, overlayId = null, existingConfig = null) {
+            try {
+                // Filter candles between anchors
+                const rangeCandles = klinedata.filter(c =>
+                    c.time >= startTime && c.time <= endTime
+                );
+
+                if (rangeCandles.length === 0) {
+                    console.warn('⚠️ No data in selected FRVP range');
+                    // We still create the object to "persist" it, but maybe without visuals?
+                    // Or return null? If we return null, it's lost. 
+                    // Better to create it but it will be invisible.
+                }
+
+                const rangeFrom = new Date(startTime * 1000).toISOString().split('T')[0];
+                const rangeTo = new Date(endTime * 1000).toISOString().split('T')[0];
+                const symbol = document.getElementById('symbol').value;
+
+                // Use existing ID or generate new
+                if (!overlayId) {
+                    overlayId = `frvp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+                }
+
+                // Check default config
+                const config = existingConfig || {
+                    rowSize: 100,
+                    volume: 'Up/Down',
+                    valueAreaVolume: 70,
+                    volumeProfile: {
+                        enabled: true,
+                        width: 30,
+                        placement: 'Left',
+                        color: 'rgba(0, 150, 255, 0.3)'
+                    },
+                    colors: {
+                        upVolume: { color: 'rgba(0, 150, 136, 0.5)' },
+                        downVolume: { color: 'rgba(255, 82, 82, 0.5)' },
+                        valueArea: { color: 'rgba(0, 0, 255, 0.3)' }
+                    },
+                    indicators: {
+                        POC: { enabled: true, color: '#FFD700', width: 2, lineStyle: 'Solid' },
+                        VAH: { enabled: true, color: '#FFA500', width: 1, lineStyle: 'Dashed' },
+                        VAL: { enabled: true, color: '#FFA500', width: 1, lineStyle: 'Dashed' }
+                    }
+                };
+
+                updateFRVPToolStatus('Calculating FRVP...');
+                const profileData = await calculateFRVP(rangeCandles, symbol, rangeFrom, rangeTo, config);
+                updateFRVPToolStatus('FRVP Ready');
+
+                const overlay = {
+                    id: overlayId,
+                    startTime: startTime,
+                    endTime: endTime,
+                    config: config,
+                    profileData: profileData,
+                    lineSeries: [],
+                    canvas: null
+                };
+
+                // Add to state immediately so we can track it
+                frvpToolState.instances.push(overlay);
+                updateFRVPControlPanel();
+
+                // Create range-limited line series for POC
+                if (profileData.config.indicators?.POC?.enabled) {
+                    const pocSeries = chart.addLineSeries({
+                        color: profileData.config.indicators.POC.color,
+                        lineWidth: profileData.config.indicators.POC.width,
+                        lineStyle: getLineStyleConstant(profileData.config.indicators.POC.lineStyle),
+                        title: `POC (${overlayId.slice(-4)})`,
+                        lastValueVisible: false,
+                        priceLineVisible: false,
+                    });
+
+                    pocSeries.setData([
+                        { time: startTime, value: profileData.poc.priceLevel },
+                        { time: endTime, value: profileData.poc.priceLevel }
+                    ]);
+
+                    overlay.lineSeries.push({ type: 'POC', series: pocSeries });
+                }
+
+                // Create range-limited line series for VAH
+                if (profileData.config.indicators?.VAH?.enabled) {
+                    const vahSeries = chart.addLineSeries({
+                        color: profileData.config.indicators.VAH.color,
+                        lineWidth: profileData.config.indicators.VAH.width,
+                        lineStyle: getLineStyleConstant(profileData.config.indicators.VAH.lineStyle),
+                        title: `VAH (${overlayId.slice(-4)})`,
+                        lastValueVisible: false,
+                        priceLineVisible: false,
+                    });
+
+                    vahSeries.setData([
+                        { time: startTime, value: profileData.vah.priceLevel },
+                        { time: endTime, value: profileData.vah.priceLevel }
+                    ]);
+
+                    overlay.lineSeries.push({ type: 'VAH', series: vahSeries });
+                }
+
+                // Create range-limited line series for VAL
+                if (profileData.config.indicators?.VAL?.enabled) {
+                    const valSeries = chart.addLineSeries({
+                        color: profileData.config.indicators.VAL.color,
+                        lineWidth: profileData.config.indicators.VAL.width,
+                        lineStyle: getLineStyleConstant(profileData.config.indicators.VAL.lineStyle),
+                        title: `VAL (${overlayId.slice(-4)})`,
+                        lastValueVisible: false,
+                        priceLineVisible: false,
+                    });
+
+                    valSeries.setData([
+                        { time: startTime, value: profileData.val.priceLevel },
+                        { time: endTime, value: profileData.val.priceLevel }
+                    ]);
+
+                    overlay.lineSeries.push({ type: 'VAL', series: valSeries });
+                }
+
+                // Create canvas overlay for histogram
+                if (profileData.config.volumeProfile?.enabled) {
+                    overlay.canvas = createHistogramCanvas(overlayId, profileData, startTime, endTime);
+                }
+
+                // Create Draggable Anchors
+                createDraggableAnchor(startTime, 'start', overlayId);
+                createDraggableAnchor(endTime, 'end', overlayId);
+
+                // Check Global Listener
+                if (chart && !window.frvpScrollListenerAttached) {
+                    // We handle this in renderChart/setupFRVPListeners now, but logic here is ok safety check
+                    // setupFRVPListeners(); 
+                }
+
+                return overlay;
+
+            } catch (error) {
+                console.error('Error rendering FRVP overlay:', error);
+                updateFRVPToolStatus('Error: ' + error.message);
+                return null;
+            }
+        }
+
+        function createHistogramCanvas(overlayId, profileData, startTime, endTime) {
+            const chartContainer = document.getElementById('tvchart');
+
+            // Create canvas element
+            const canvas = document.createElement('canvas');
+            canvas.id = `frvp-histogram-${overlayId}`;
+            canvas.className = 'frvp-histogram-canvas';
+            canvas.style.position = 'absolute';
+            canvas.style.top = '0';
+            canvas.style.left = '0';
+            canvas.style.pointerEvents = 'none';
+            canvas.style.zIndex = '10';
+
+            // Make chart container position relative if not already
+            if (getComputedStyle(chartContainer).position === 'static') {
+                chartContainer.style.position = 'relative';
+            }
+
+            // Set canvas size to match chart
+            const chartRect = chartContainer.getBoundingClientRect();
+            canvas.width = chartRect.width;
+            canvas.height = chartRect.height;
+            canvas.style.width = chartRect.width + 'px';
+            canvas.style.height = chartRect.height + 'px';
+
+            chartContainer.appendChild(canvas);
+
+            console.log('📊 Canvas created:', {
+                id: canvas.id,
+                width: canvas.width,
+                height: canvas.height,
+                zIndex: canvas.style.zIndex
+            });
+
+            // Draw histogram
+            drawHistogram(canvas, profileData, startTime, endTime);
+
+            // Redraw on chart resize/zoom
+            const resizeObserver = new ResizeObserver(() => {
+                const newRect = chartContainer.getBoundingClientRect();
+                canvas.width = newRect.width;
+                canvas.height = newRect.height;
+                canvas.style.width = newRect.width + 'px';
+                canvas.style.height = newRect.height + 'px';
+                drawHistogram(canvas, profileData, startTime, endTime);
+            });
+            resizeObserver.observe(chartContainer);
+
+            // Store observer for cleanup
+            canvas._resizeObserver = resizeObserver;
+
+            return canvas;
+        }
+
+        function drawHistogram(canvas, profileData, startTime, endTime) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const { rows, valueAreaRows } = profileData;
+            const config = profileData.config;
+
+            if (!config.volumeProfile?.enabled) {
+                console.log('⚠️ Histogram disabled in config');
+                return;
+            }
+
+            // Get chart dimensions and visible range
+            const timeScale = chart.timeScale();
+
+            try {
+                // Get time coordinates using logical indices to handle off-screen rendering
+                // helper to find index
+                const findIndex = (t) => {
+                    // Assuming klinedata is sorted
+                    // precise match or closest? FRVP anchors are exact times from clicks
+                    let idx = klinedata.findIndex(k => k.time === t);
+                    return idx;
+                };
+
+                const startIdx = findIndex(startTime);
+                const endIdx = findIndex(endTime);
+
+                if (startIdx === -1 || endIdx === -1) {
+                    console.warn('⚠️ Anchors not found in data');
+                    return;
+                }
+
+                const startX = timeScale.logicalToCoordinate(startIdx);
+                const endX = timeScale.logicalToCoordinate(endIdx);
+
+                console.log('📊 Drawing histogram:', {
+                    startX,
+                    endX,
+                    startIdx,
+                    endIdx,
+                    rows: rows.length
+                });
+
+                // If both are null (should rarely happen with logicalToCoordinate unless series is empty)
+                if (startX === null || endX === null) {
+                    return;
+                }
+
+                // If coordinates are way off screen, we still draw, the canvas clips it.
+                // startX/endX can be negative or > canvas.width
+
+
+                const rangeWidth = Math.abs(endX - startX);
+                const histogramWidth = (rangeWidth * config.volumeProfile.width) / 100;
+                const placement = config.volumeProfile.placement || 'Left';
+                const histogramX = placement === 'Left' ? Math.min(startX, endX) : Math.max(startX, endX) - histogramWidth;
+
+                console.log('📊 Histogram dimensions:', {
+                    rangeWidth,
+                    histogramWidth,
+                    histogramX,
+                    placement
+                });
+
+                // Find max volume for scaling
+                const maxVolume = Math.max(...rows.map(r => r.totalVolume));
+                if (maxVolume === 0) {
+                    console.warn('⚠️ Max volume is zero');
+                    return;
+                }
+
+                let barsDrawn = 0;
+
+                // Draw each row
+                rows.forEach(row => {
+                    if (row.totalVolume === 0) return;
+
+                    // Get Y coordinates for this price level using series API
+                    const yTop = candleSeries.priceToCoordinate(row.priceHigh);
+                    const yBottom = candleSeries.priceToCoordinate(row.priceLow);
+
+                    if (yTop === null || yBottom === null) return;
+
+                    const barHeight = Math.abs(yBottom - yTop);
+                    const volumeRatio = row.totalVolume / maxVolume;
+                    const barWidth = volumeRatio * histogramWidth;
+
+                    // Determine colors based on value area membership
+                    const isInVA = valueAreaRows.has(row.index);
+                    const upColor = isInVA ? config.colors.valueAreaUp : config.colors.upVolume;
+                    const downColor = isInVA ? config.colors.valueAreaDown : config.colors.downVolume;
+
+                    // Calculate up/down volume widths
+                    const upRatio = row.totalVolume > 0 ? row.upVolume / row.totalVolume : 0;
+                    const downRatio = row.totalVolume > 0 ? row.downVolume / row.totalVolume : 0;
+
+                    // Draw up volume bar
+                    if (row.upVolume > 0) {
+                        ctx.fillStyle = hexToRgba(upColor.color, upColor.opacity);
+                        ctx.fillRect(
+                            histogramX,
+                            Math.min(yTop, yBottom),
+                            barWidth * upRatio,
+                            barHeight
+                        );
+                        barsDrawn++;
+                    }
+
+                    // Draw down volume bar
+                    if (row.downVolume > 0) {
+                        ctx.fillStyle = hexToRgba(downColor.color, downColor.opacity);
+                        ctx.fillRect(
+                            histogramX + (barWidth * upRatio),
+                            Math.min(yTop, yBottom),
+                            barWidth * downRatio,
+                            barHeight
+                        );
+                        barsDrawn++;
+                    }
+                });
+
+                console.log(`✅ Histogram drawn: ${barsDrawn} bars`);
+
+            } catch (e) {
+                console.error('❌ Failed to draw histogram:', e);
+            }
+        }
+
+        function hexToRgba(hex, opacity) {
+            hex = hex.replace('#', '');
+            const r = parseInt(hex.substring(0, 2), 16);
+            const g = parseInt(hex.substring(2, 4), 16);
+            const b = parseInt(hex.substring(4, 6), 16);
+            const alpha = opacity / 100;
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+
+        function updateFRVPControlPanel() {
+            const panel = document.getElementById('frvpControlPanel');
+            if (!panel) return;
+
+            // Clear existing controls
+            panel.innerHTML = '';
+
+            // Add control for each overlay
+            frvpToolState.instances.forEach((overlay, index) => {
+                const controlDiv = document.createElement('div');
+                controlDiv.className = 'frvp-overlay-control';
+                controlDiv.innerHTML = `
+                    <span class="frvp-overlay-label">FRVP #${index + 1}</span>
+                    <button class="frvp-control-btn edit-btn" onclick="editFRVPRange('${overlay.id}')" title="Edit Range">
+                        ✏️ Edit
+                    </button>
+                    <button class="frvp-control-btn settings-btn" onclick="openFRVPSettings('${overlay.id}')" title="Settings">
+                        ⚙️ Settings
+                    </button>
+                    <button class="frvp-control-btn delete-btn" onclick="removeFRVPOverlay('${overlay.id}')" title="Delete">
+                        🗑️ Delete
+                    </button>
+                `;
+                panel.appendChild(controlDiv);
+            });
+        }
+
+        function openFRVPSettings(overlayId) {
+            const overlay = frvpToolState.instances.find(o => o.id === overlayId);
+            if (!overlay) return;
+
+            // Create settings modal
+            const modal = document.createElement('div');
+            modal.className = 'frvp-settings-modal';
+            modal.innerHTML = `
+                <div class="frvp-settings-content">
+                    <div class="frvp-settings-header">
+                        <h3>FRVP Settings (${overlayId.slice(-4)})</h3>
+                        <button onclick="closeFRVPSettings('${overlayId}')" class="close-btn">×</button>
+                    </div>
+                    <div class="frvp-settings-body">
+                        <div class="settings-group">
+                            <label>Row Size</label>
+                            <input type="number" id="frvp-rowSize-${overlayId}" value="${overlay.config.rowSize}" min="10" max="1000">
+                        </div>
+                        <div class="settings-group">
+                            <label>Volume</label>
+                            <select id="frvp-volume-${overlayId}">
+                                <option value="Total" ${overlay.config.volume === 'Total' ? 'selected' : ''}>Total</option>
+                                <option value="Up/Down" ${overlay.config.volume === 'Up/Down' ? 'selected' : ''}>Up/Down</option>
+                                <option value="Delta" ${overlay.config.volume === 'Delta' ? 'selected' : ''}>Delta</option>
+                            </select>
+                        </div>
+                        <div class="settings-group">
+                            <label>Value Area %</label>
+                            <input type="number" id="frvp-valueArea-${overlayId}" value="${overlay.config.valueAreaVolume}" min="0" max="100">
+                        </div>
+                        <div class="settings-group">
+                            <label>Width %</label>
+                            <input type="number" id="frvp-width-${overlayId}" value="${overlay.config.volumeProfile.width}" min="0" max="100">
+                        </div>
+                        <div class="settings-group">
+                            <label>Up Volume Color</label>
+                            <input type="color" id="frvp-upColor-${overlayId}" value="${overlay.config.colors.upVolume.color}">
+                        </div>
+                        <div class="settings-group">
+                            <label>Down Volume Color</label>
+                            <input type="color" id="frvp-downColor-${overlayId}" value="${overlay.config.colors.downVolume.color}">
+                        </div>
+                        <div class="settings-group">
+                            <label class="checkbox-wrap">
+                                <input type="checkbox" id="frvp-poc-${overlayId}" ${overlay.config.indicators.POC.enabled ? 'checked' : ''}> POC
+                            </label>
+                            <label class="checkbox-wrap">
+                                <input type="checkbox" id="frvp-vah-${overlayId}" ${overlay.config.indicators.VAH.enabled ? 'checked' : ''}> VAH
+                            </label>
+                            <label class="checkbox-wrap">
+                                <input type="checkbox" id="frvp-val-${overlayId}" ${overlay.config.indicators.VAL.enabled ? 'checked' : ''}> VAL
+                            </label>
+                        </div>
+                        
+                        <hr style="margin: 1rem 0; border: none; border-top: 1px solid rgba(148, 163, 184, 0.2);">
+                        <h4 style="margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.875rem;">Line Styling</h4>
+                        
+                        <div class="settings-group">
+                            <label>POC Color</label>
+                            <input type="color" id="frvp-pocColor-${overlayId}" value="${overlay.config.indicators.POC.color}">
+                            <label style="margin-left: 1rem;">Width</label>
+                            <input type="number" id="frvp-pocWidth-${overlayId}" value="${overlay.config.indicators.POC.width}" min="1" max="10" style="width: 60px;">
+                            <label style="margin-left: 1rem;">Style</label>
+                            <select id="frvp-pocStyle-${overlayId}" style="width: 100px;">
+                                <option value="solid" ${overlay.config.indicators.POC.lineStyle === 'solid' ? 'selected' : ''}>Solid</option>
+                                <option value="dotted" ${overlay.config.indicators.POC.lineStyle === 'dotted' ? 'selected' : ''}>Dotted</option>
+                                <option value="dashed" ${overlay.config.indicators.POC.lineStyle === 'dashed' ? 'selected' : ''}>Dashed</option>
+                            </select>
+                        </div>
+                        
+                        <div class="settings-group">
+                            <label>VAH Color</label>
+                            <input type="color" id="frvp-vahColor-${overlayId}" value="${overlay.config.indicators.VAH.color}">
+                            <label style="margin-left: 1rem;">Width</label>
+                            <input type="number" id="frvp-vahWidth-${overlayId}" value="${overlay.config.indicators.VAH.width}" min="1" max="10" style="width: 60px;">
+                            <label style="margin-left: 1rem;">Style</label>
+                            <select id="frvp-vahStyle-${overlayId}" style="width: 100px;">
+                                <option value="solid" ${overlay.config.indicators.VAH.lineStyle === 'solid' ? 'selected' : ''}>Solid</option>
+                                <option value="dotted" ${overlay.config.indicators.VAH.lineStyle === 'dotted' ? 'selected' : ''}>Dotted</option>
+                                <option value="dashed" ${overlay.config.indicators.VAH.lineStyle === 'dashed' ? 'selected' : ''}>Dashed</option>
+                            </select>
+                        </div>
+                        
+                        <div class="settings-group">
+                            <label>VAL Color</label>
+                            <input type="color" id="frvp-valColor-${overlayId}" value="${overlay.config.indicators.VAL.color}">
+                            <label style="margin-left: 1rem;">Width</label>
+                            <input type="number" id="frvp-valWidth-${overlayId}" value="${overlay.config.indicators.VAL.width}" min="1" max="10" style="width: 60px;">
+                            <label style="margin-left: 1rem;">Style</label>
+                            <select id="frvp-valStyle-${overlayId}" style="width: 100px;">
+                                <option value="solid" ${overlay.config.indicators.VAL.lineStyle === 'solid' ? 'selected' : ''}>Solid</option>
+                                <option value="dotted" ${overlay.config.indicators.VAL.lineStyle === 'dotted' ? 'selected' : ''}>Dotted</option>
+                                <option value="dashed" ${overlay.config.indicators.VAL.lineStyle === 'dashed' ? 'selected' : ''}>Dashed</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="frvp-settings-footer">
+                        <button onclick="removeFRVPOverlay('${overlayId}')" class="btn-danger">Remove</button>
+                        <button onclick="applyFRVPSettings('${overlayId}')" class="btn-primary">Apply</button>
+                    </div>
+                </div>
+            `;
+            modal.id = `frvp-modal-${overlayId}`;
+            document.body.appendChild(modal);
+        }
+
+        function closeFRVPSettings(overlayId) {
+            const modal = document.getElementById(`frvp-modal-${overlayId}`);
+            if (modal) modal.remove();
+        }
+
+        function editFRVPRange(overlayId) {
+            const overlay = frvpToolState.instances.find(o => o.id === overlayId);
+            if (!overlay) return;
+
+            // Store overlay ID for editing
+            frvpToolState.editingOverlayId = overlayId;
+
+            // Activate tool
+            activateFRVPTool();
+
+            // Update status
+            updateFRVPToolStatus('Editing FRVP range - Click new start point...');
+        }
+
+        function editFRVPRange(overlayId) {
+            const overlay = frvpToolState.instances.find(o => o.id === overlayId);
+            if (!overlay) return;
+
+            // Store overlay ID for editing
+            frvpToolState.editingOverlayId = overlayId;
+
+            // Activate tool
+            activateFRVPTool();
+
+            // Update status
+            updateFRVPToolStatus('Editing FRVP range - Click new start point...');
+        }
+
+        async function applyFRVPSettings(overlayId) {
+            const overlay = frvpToolState.instances.find(o => o.id === overlayId);
+            if (!overlay) return;
+
+            // Get new settings from inputs
+            const newConfig = {
+                ...overlay.config,
+                rowSize: parseInt(document.getElementById(`frvp-rowSize-${overlayId}`).value),
+                volume: document.getElementById(`frvp-volume-${overlayId}`).value,
+                valueAreaVolume: parseInt(document.getElementById(`frvp-valueArea-${overlayId}`).value),
+                volumeProfile: {
+                    ...overlay.config.volumeProfile,
+                    width: parseInt(document.getElementById(`frvp-width-${overlayId}`).value)
+                },
+                colors: {
+                    ...overlay.config.colors,
+                    upVolume: {
+                        ...overlay.config.colors.upVolume,
+                        color: document.getElementById(`frvp-upColor-${overlayId}`).value
+                    },
+                    downVolume: {
+                        ...overlay.config.colors.downVolume,
+                        color: document.getElementById(`frvp-downColor-${overlayId}`).value
+                    }
+                },
+                indicators: {
+                    ...overlay.config.indicators,
+                    POC: {
+                        ...overlay.config.indicators.POC,
+                        enabled: document.getElementById(`frvp-poc-${overlayId}`).checked,
+                        color: document.getElementById(`frvp-pocColor-${overlayId}`).value,
+                        width: parseInt(document.getElementById(`frvp-pocWidth-${overlayId}`).value),
+                        lineStyle: document.getElementById(`frvp-pocStyle-${overlayId}`).value
+                    },
+                    VAH: {
+                        ...overlay.config.indicators.VAH,
+                        enabled: document.getElementById(`frvp-vah-${overlayId}`).checked,
+                        color: document.getElementById(`frvp-vahColor-${overlayId}`).value,
+                        width: parseInt(document.getElementById(`frvp-vahWidth-${overlayId}`).value),
+                        lineStyle: document.getElementById(`frvp-vahStyle-${overlayId}`).value
+                    },
+                    VAL: {
+                        ...overlay.config.indicators.VAL,
+                        enabled: document.getElementById(`frvp-val-${overlayId}`).checked,
+                        color: document.getElementById(`frvp-valColor-${overlayId}`).value,
+                        width: parseInt(document.getElementById(`frvp-valWidth-${overlayId}`).value),
+                        lineStyle: document.getElementById(`frvp-valStyle-${overlayId}`).value
+                    }
+                }
+            };
+
+            // Remove only visual elements (keep overlay in instances)
+            overlay.lineSeries.forEach(ls => {
+                try {
+                    chart.removeSeries(ls.series);
+                } catch (e) {
+                    console.warn('Failed to remove line series:', e);
+                }
+            });
+
+            if (overlay.canvas) {
+                try {
+                    if (overlay.canvas._resizeObserver) {
+                        overlay.canvas._resizeObserver.disconnect();
+                    }
+                    overlay.canvas.remove();
+                } catch (e) {
+                    console.warn('Failed to remove canvas:', e);
+                }
+            }
+
+            // Recalculate with new settings
+            const rangeFrom = new Date(overlay.startTime * 1000).toISOString().split('T')[0];
+            const rangeTo = new Date(overlay.endTime * 1000).toISOString().split('T')[0];
+            const symbol = document.getElementById('symbol').value;
+            const rangeCandles = klinedata.filter(c => c.time >= overlay.startTime && c.time <= overlay.endTime);
+
+            const profileData = await calculateFRVP(rangeCandles, symbol, rangeFrom, rangeTo, newConfig);
+
+            // Update overlay in place
+            overlay.profileData = profileData;
+            overlay.config = newConfig;
+            overlay.lineSeries = [];
+            overlay.canvas = null;
+
+            // Recreate visuals using same overlay object
+            const newLineSeries = [];
+
+            // Recreate POC line
+            if (profileData.config.indicators?.POC?.enabled) {
+                const pocSeries = chart.addLineSeries({
+                    color: profileData.config.indicators.POC.color,
+                    lineWidth: profileData.config.indicators.POC.width,
+                    lineStyle: getLineStyleConstant(profileData.config.indicators.POC.lineStyle),
+                    title: `POC (${overlayId.slice(-4)})`,
+                    lastValueVisible: false,
+                    priceLineVisible: false,
+                });
+                pocSeries.setData([
+                    { time: overlay.startTime, value: profileData.poc.priceLevel },
+                    { time: overlay.endTime, value: profileData.poc.priceLevel }
+                ]);
+                newLineSeries.push({ type: 'POC', series: pocSeries });
+            }
+
+            // Recreate VAH line
+            if (profileData.config.indicators?.VAH?.enabled) {
+                const vahSeries = chart.addLineSeries({
+                    color: profileData.config.indicators.VAH.color,
+                    lineWidth: profileData.config.indicators.VAH.width,
+                    lineStyle: getLineStyleConstant(profileData.config.indicators.VAH.lineStyle),
+                    title: `VAH (${overlayId.slice(-4)})`,
+                    lastValueVisible: false,
+                    priceLineVisible: false,
+                });
+                vahSeries.setData([
+                    { time: overlay.startTime, value: profileData.vah.priceLevel },
+                    { time: overlay.endTime, value: profileData.vah.priceLevel }
+                ]);
+                newLineSeries.push({ type: 'VAH', series: vahSeries });
+            }
+
+            // Recreate VAL line
+            if (profileData.config.indicators?.VAL?.enabled) {
+                const valSeries = chart.addLineSeries({
+                    color: profileData.config.indicators.VAL.color,
+                    lineWidth: profileData.config.indicators.VAL.width,
+                    lineStyle: getLineStyleConstant(profileData.config.indicators.VAL.lineStyle),
+                    title: `VAL (${overlayId.slice(-4)})`,
+                    lastValueVisible: false,
+                    priceLineVisible: false,
+                });
+                valSeries.setData([
+                    { time: overlay.startTime, value: profileData.val.priceLevel },
+                    { time: overlay.endTime, value: profileData.val.priceLevel }
+                ]);
+                newLineSeries.push({ type: 'VAL', series: valSeries });
+            }
+
+            overlay.lineSeries = newLineSeries;
+
+            // Recreate histogram
+            if (profileData.config.volumeProfile?.enabled) {
+                overlay.canvas = createHistogramCanvas(overlayId, profileData, overlay.startTime, overlay.endTime);
+            }
+
+            closeFRVPSettings(overlayId);
+            console.log('✅ FRVP settings applied:', overlayId);
+        }
+
+        function removeFRVPOverlay(overlayId, closeModal = true) {
+            const index = frvpToolState.instances.findIndex(o => o.id === overlayId);
+            if (index === -1) return;
+
+            const overlay = frvpToolState.instances[index];
+
+            // Remove line series (changed from price lines)
+            overlay.lineSeries.forEach(ls => {
+                try {
+                    chart.removeSeries(ls.series);
+                } catch (e) {
+                    console.warn('Failed to remove line series:', e);
+                }
+            });
+
+            // Remove canvas overlay
+            if (overlay.canvas) {
+                try {
+                    // Disconnect resize observer
+                    if (overlay.canvas._resizeObserver) {
+                        overlay.canvas._resizeObserver.disconnect();
+                    }
+                    // Remove canvas from DOM
+                    overlay.canvas.remove();
+                } catch (e) {
+                    console.warn('Failed to remove canvas:', e);
+                }
+            }
+
+            // Remove from instances
+            frvpToolState.instances.splice(index, 1);
+
+            // Remove markers associated with this overlay (Legacy Check)
+            const existingMarkers = candleSeries.markers ? candleSeries.markers() : [];
+            const filteredMarkers = existingMarkers.filter(m => m.id !== overlayId);
+            candleSeries.setMarkers(filteredMarkers);
+
+            // Remove Draggable Anchors (DOM)
+            const startAnchor = document.getElementById(`anchor-${overlayId}-start`);
+            const endAnchor = document.getElementById(`anchor-${overlayId}-end`);
+
+            if (startAnchor) {
+                startAnchor.remove();
+                // Remove from tracking array
+                const idx = frvpAnchors.indexOf(startAnchor);
+                if (idx > -1) frvpAnchors.splice(idx, 1);
+            }
+            if (endAnchor) {
+                endAnchor.remove();
+                const idx = frvpAnchors.indexOf(endAnchor);
+                if (idx > -1) frvpAnchors.splice(idx, 1);
+            }
+
+            // Update control panel
+            updateFRVPControlPanel();
+
+            if (closeModal) {
+                closeFRVPSettings(overlayId);
+            }
+
+            console.log('🗑️ FRVP overlay removed:', overlayId);
+        }
+
+        // Redraw histograms on chart zoom/pan/scroll
+        chart?.timeScale().subscribeVisibleLogicalRangeChange(() => {
+            frvpToolState.instances.forEach(overlay => {
+                if (overlay.canvas && overlay.profileData) {
+                    drawHistogram(overlay.canvas, overlay.profileData, overlay.startTime, overlay.endTime);
+                }
+            });
+        });
+
+        // ALSO redraw on pan (time range change)
+        chart?.timeScale().subscribeVisibleTimeRangeChange(() => {
+            frvpToolState.instances.forEach(overlay => {
+                if (overlay.canvas && overlay.profileData) {
+                    drawHistogram(overlay.canvas, overlay.profileData, overlay.startTime, overlay.endTime);
+                }
+            });
+        });
 
         window.addEventListener('load', () => {
             renderChart();
