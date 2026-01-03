@@ -1214,7 +1214,7 @@
             const rangeTo = endDate.toISOString().split('T')[0];
 
             try {
-                const profileData = await calculateFRVP(rangeCandles, symbol, rangeFrom, rangeTo, overlay.config);
+                const profileData = await calculateFRVP(rangeCandles, startTime, endTime, symbol, rangeFrom, rangeTo, overlay.config);
 
                 // 2. Update Overlay Data
                 overlay.startTime = startTime;
@@ -1233,8 +1233,8 @@
                             color: profileData.config.indicators[key].color,
                             lineWidth: profileData.config.indicators[key].width,
                             lineStyle: getLineStyleConstant(profileData.config.indicators[key].lineStyle),
-                            title: `${name} (${overlayId.slice(-4)})`,
-                            lastValueVisible: false,
+                            title: name,
+                            lastValueVisible: true,
                             priceLineVisible: false
                         });
                         s.setData([
@@ -1302,19 +1302,20 @@
                         color: 'rgba(0, 150, 255, 0.3)'
                     },
                     colors: {
-                        upVolume: { color: 'rgba(0, 150, 136, 0.5)' },
-                        downVolume: { color: 'rgba(255, 82, 82, 0.5)' },
-                        valueArea: { color: 'rgba(0, 0, 255, 0.3)' }
+                        upVolume: { color: '#009688', opacity: 50 },
+                        downVolume: { color: '#ff5252', opacity: 50 },
+                        valueAreaUp: { color: '#00bcd4', opacity: 80 },
+                        valueAreaDown: { color: '#e91e63', opacity: 80 }
                     },
                     indicators: {
-                        POC: { enabled: true, color: '#FFD700', width: 2, lineStyle: 'Solid' },
-                        VAH: { enabled: true, color: '#FFA500', width: 1, lineStyle: 'Dashed' },
-                        VAL: { enabled: true, color: '#FFA500', width: 1, lineStyle: 'Dashed' }
+                        POC: { enabled: true, color: '#FFD700', width: 2, lineStyle: 'solid' },
+                        VAH: { enabled: true, color: '#FFA500', width: 1, lineStyle: 'dashed' },
+                        VAL: { enabled: true, color: '#FFA500', width: 1, lineStyle: 'dashed' }
                     }
                 };
 
                 updateFRVPToolStatus('Calculating FRVP...');
-                const profileData = await calculateFRVP(rangeCandles, symbol, rangeFrom, rangeTo, config);
+                const profileData = await calculateFRVP(rangeCandles, startTime, endTime, symbol, rangeFrom, rangeTo, config);
                 updateFRVPToolStatus('FRVP Ready');
 
                 const overlay = {
@@ -1337,8 +1338,8 @@
                         color: profileData.config.indicators.POC.color,
                         lineWidth: profileData.config.indicators.POC.width,
                         lineStyle: getLineStyleConstant(profileData.config.indicators.POC.lineStyle),
-                        title: `POC (${overlayId.slice(-4)})`,
-                        lastValueVisible: false,
+                        title: 'POC',
+                        lastValueVisible: true,
                         priceLineVisible: false,
                     });
 
@@ -1356,8 +1357,8 @@
                         color: profileData.config.indicators.VAH.color,
                         lineWidth: profileData.config.indicators.VAH.width,
                         lineStyle: getLineStyleConstant(profileData.config.indicators.VAH.lineStyle),
-                        title: `VAH (${overlayId.slice(-4)})`,
-                        lastValueVisible: false,
+                        title: 'VAH',
+                        lastValueVisible: true,
                         priceLineVisible: false,
                     });
 
@@ -1375,8 +1376,8 @@
                         color: profileData.config.indicators.VAL.color,
                         lineWidth: profileData.config.indicators.VAL.width,
                         lineStyle: getLineStyleConstant(profileData.config.indicators.VAL.lineStyle),
-                        title: `VAL (${overlayId.slice(-4)})`,
-                        lastValueVisible: false,
+                        title: 'VAL',
+                        lastValueVisible: true,
                         priceLineVisible: false,
                     });
 
@@ -1756,20 +1757,6 @@
             updateFRVPToolStatus('Editing FRVP range - Click new start point...');
         }
 
-        function editFRVPRange(overlayId) {
-            const overlay = frvpToolState.instances.find(o => o.id === overlayId);
-            if (!overlay) return;
-
-            // Store overlay ID for editing
-            frvpToolState.editingOverlayId = overlayId;
-
-            // Activate tool
-            activateFRVPTool();
-
-            // Update status
-            updateFRVPToolStatus('Editing FRVP range - Click new start point...');
-        }
-
         async function applyFRVPSettings(overlayId) {
             const overlay = frvpToolState.instances.find(o => o.id === overlayId);
             if (!overlay) return;
@@ -1787,12 +1774,21 @@
                 colors: {
                     ...overlay.config.colors,
                     upVolume: {
-                        ...overlay.config.colors.upVolume,
-                        color: document.getElementById(`frvp-upColor-${overlayId}`).value
+                        color: document.getElementById(`frvp-upColor-${overlayId}`).value,
+                        opacity: overlay.config.colors.upVolume?.opacity || 50
                     },
                     downVolume: {
-                        ...overlay.config.colors.downVolume,
-                        color: document.getElementById(`frvp-downColor-${overlayId}`).value
+                        color: document.getElementById(`frvp-downColor-${overlayId}`).value,
+                        opacity: overlay.config.colors.downVolume?.opacity || 50
+                    },
+                    // Sync VA colors with base colors if they are missing or should follow
+                    valueAreaUp: {
+                        color: document.getElementById(`frvp-upColor-${overlayId}`).value,
+                        opacity: overlay.config.colors.valueAreaUp?.opacity || 80
+                    },
+                    valueAreaDown: {
+                        color: document.getElementById(`frvp-downColor-${overlayId}`).value,
+                        opacity: overlay.config.colors.valueAreaDown?.opacity || 80
                     }
                 },
                 indicators: {
@@ -1841,13 +1837,27 @@
                 }
             }
 
-            // Recalculate with new settings
-            const rangeFrom = new Date(overlay.startTime * 1000).toISOString().split('T')[0];
-            const rangeTo = new Date(overlay.endTime * 1000).toISOString().split('T')[0];
-            const symbol = document.getElementById('symbol').value;
-            const rangeCandles = klinedata.filter(c => c.time >= overlay.startTime && c.time <= overlay.endTime);
+            // Check if we need to re-calculate or just re-render
+            const needsRecalc =
+                newConfig.rowSize !== overlay.config.rowSize ||
+                newConfig.volume !== overlay.config.volume ||
+                newConfig.valueAreaVolume !== overlay.config.valueAreaVolume;
 
-            const profileData = await calculateFRVP(rangeCandles, symbol, rangeFrom, rangeTo, newConfig);
+            let profileData = overlay.profileData;
+
+            if (needsRecalc) {
+                console.log('🔄 FRVP: Recalculating due to data setting changes...');
+                const rangeFrom = new Date(overlay.startTime * 1000).toISOString().split('T')[0];
+                const rangeTo = new Date(overlay.endTime * 1000).toISOString().split('T')[0];
+                const symbol = document.getElementById('symbol').value;
+                const rangeCandles = klinedata.filter(c => c.time >= overlay.startTime && c.time <= overlay.endTime);
+
+                profileData = await calculateFRVP(rangeCandles, overlay.startTime, overlay.endTime, symbol, rangeFrom, rangeTo, newConfig);
+            } else {
+                console.log('🎨 FRVP: Visual-only update, skipping calculation');
+                // Just update the config inside the existing profile data so visuals pick it up
+                profileData.config = newConfig;
+            }
 
             // Update overlay in place
             overlay.profileData = profileData;
@@ -1864,8 +1874,8 @@
                     color: profileData.config.indicators.POC.color,
                     lineWidth: profileData.config.indicators.POC.width,
                     lineStyle: getLineStyleConstant(profileData.config.indicators.POC.lineStyle),
-                    title: `POC (${overlayId.slice(-4)})`,
-                    lastValueVisible: false,
+                    title: 'POC',
+                    lastValueVisible: true,
                     priceLineVisible: false,
                 });
                 pocSeries.setData([
@@ -1881,8 +1891,8 @@
                     color: profileData.config.indicators.VAH.color,
                     lineWidth: profileData.config.indicators.VAH.width,
                     lineStyle: getLineStyleConstant(profileData.config.indicators.VAH.lineStyle),
-                    title: `VAH (${overlayId.slice(-4)})`,
-                    lastValueVisible: false,
+                    title: 'VAH',
+                    lastValueVisible: true,
                     priceLineVisible: false,
                 });
                 vahSeries.setData([
@@ -1898,8 +1908,8 @@
                     color: profileData.config.indicators.VAL.color,
                     lineWidth: profileData.config.indicators.VAL.width,
                     lineStyle: getLineStyleConstant(profileData.config.indicators.VAL.lineStyle),
-                    title: `VAL (${overlayId.slice(-4)})`,
-                    lastValueVisible: false,
+                    title: 'VAL',
+                    lastValueVisible: true,
                     priceLineVisible: false,
                 });
                 valSeries.setData([

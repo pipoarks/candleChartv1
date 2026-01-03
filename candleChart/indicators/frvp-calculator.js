@@ -11,10 +11,12 @@ class FRVPCalculator {
     /**
      * Main calculation method
      * @param {Array} minuteBars - Array of 1-minute OHLCV bars
+     * @param {number} startTime - Start Unix timestamp
+     * @param {number} endTime - End Unix timestamp
      * @param {Object} config - Configuration object
      * @returns {Object} Complete profile data with POC, VAH, VAL, rows
      */
-    calculateProfile(minuteBars, config = {}) {
+    calculateProfile(minuteBars, startTime, endTime, config = {}) {
         if (!minuteBars || minuteBars.length === 0) {
             throw new Error('No data provided for FRVP calculation');
         }
@@ -22,9 +24,21 @@ class FRVPCalculator {
         // Merge config with instance config
         const settings = { ...this.config, ...config };
 
+        // Step 0: Filter bars to the specific time range
+        const rangeBars = minuteBars.filter(bar => bar.time >= startTime && bar.time <= endTime);
+
+        if (rangeBars.length === 0) {
+            console.warn(`⚠️ FRVP: No data points found between ${new Date(startTime * 1000).toLocaleString()} and ${new Date(endTime * 1000).toLocaleString()}`);
+            // Fallback to determine range from full set if filtered is empty to avoid crashes, 
+            // though normally we should just show empty profile.
+            throw new Error('No data bars in selected time range');
+        }
+
+        console.log(`📊 FRVP Calculation: Using ${rangeBars.length} / ${minuteBars.length} bars from the selected range.`);
+
         // Step 1: Determine price range
-        const profileHigh = Math.max(...minuteBars.map(b => b.high));
-        const profileLow = Math.min(...minuteBars.map(b => b.low));
+        const profileHigh = Math.max(...rangeBars.map(b => b.high));
+        const profileLow = Math.min(...rangeBars.map(b => b.low));
 
         console.log(`📊 FRVP: Price range ${profileLow.toFixed(2)} - ${profileHigh.toFixed(2)}`);
 
@@ -32,7 +46,7 @@ class FRVPCalculator {
         const rows = this.createPriceLevelRows(profileLow, profileHigh, settings);
 
         // Step 3: Distribute volume across rows
-        this.distributeVolume(minuteBars, rows);
+        this.distributeVolume(rangeBars, rows);
 
         // Step 4: Calculate key levels
         const poc = this.calculatePOC(rows);
@@ -237,9 +251,10 @@ class FRVPCalculator {
         let aboveIndex = pocIndex - 1;
         let belowIndex = pocIndex + 1;
 
+        console.log(`📊 VA Calc: Target ${targetVolume.toFixed(0)} (${vaPercentage}%)`);
+
         // Steps 4-7: Iteratively expand value area
-        while (accumulatedVolume < targetVolume &&
-            (aboveIndex >= 0 || belowIndex < rows.length)) {
+        while (accumulatedVolume < targetVolume) {
 
             const aboveRow = aboveIndex >= 0 ? rows[aboveIndex] : null;
             const belowRow = belowIndex < rows.length ? rows[belowIndex] : null;
@@ -280,12 +295,8 @@ class FRVPCalculator {
                 }
             }
 
-            // Step 6: Check if adding exceeds target
-            if (accumulatedVolume + chosenRow.totalVolume > targetVolume) {
-                break;
-            }
+            // [UPDATED LOGIC]: Always include the chosen row, then check if we reached target
 
-            // Add to value area
             valueAreaRows.add(chosenRow.index);
             accumulatedVolume += chosenRow.totalVolume;
 
@@ -296,6 +307,8 @@ class FRVPCalculator {
                 belowIndex++;
             }
         }
+
+        console.log(`✅ VA Calc Completed: Accumulated ${accumulatedVolume.toFixed(0)} / ${totalVolume.toFixed(0)} (${(accumulatedVolume / totalVolume * 100).toFixed(1)}%)`);
 
         // Step 9: Determine VAH and VAL
         const vaRowsArray = Array.from(valueAreaRows)

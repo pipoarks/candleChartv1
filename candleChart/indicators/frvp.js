@@ -74,13 +74,15 @@ async function fetchOneMinuteDataForFRVP(symbol, rangeFrom, rangeTo) {
 /**
  * Calculate FRVP profile data
  * @param {Array} candles - Main chart candles (for time reference)
+ * @param {number} startTime - Start Unix timestamp
+ * @param {number} endTime - End Unix timestamp
  * @param {string} symbol - Trading symbol
  * @param {string} rangeFrom - Start date
  * @param {string} rangeTo - End date
  * @param {Object} config - FRVP configuration
  * @returns {Promise<Object>} Calculated profile data
  */
-async function calculateFRVP(candles, symbol, rangeFrom, rangeTo, config) {
+async function calculateFRVP(candles, startTime, endTime, symbol, rangeFrom, rangeTo, config) {
     try {
         // Fetch 1-minute data
         const minuteBars = await fetchOneMinuteDataForFRVP(symbol, rangeFrom, rangeTo);
@@ -98,8 +100,8 @@ async function calculateFRVP(candles, symbol, rangeFrom, rangeTo, config) {
         // Create calculator instance
         const calculator = new FRVPCalculator(validatedSettings);
 
-        // Calculate profile
-        const profileData = calculator.calculateProfile(minuteBars, validatedSettings);
+        // Calculate profile - pass exact timestamps for filtering
+        const profileData = calculator.calculateProfile(minuteBars, startTime, endTime, validatedSettings);
 
         // Get formatted data for rendering
         const formattedRows = calculator.getFormattedData(profileData, validatedSettings);
