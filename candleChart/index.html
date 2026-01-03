@@ -23,7 +23,10 @@
     <script src="indicators/frvp-calculator.js"></script>
     <script src="indicators/frvp-renderer.js"></script>
     <script src="indicators/frvp.js"></script>
+    <script src="indicators/drawings.js"></script>
+    <script src="indicators/alerts.js"></script>
     <script src="indicators/overlays.js"></script>
+    <script src="indicators/replay.js"></script>
     <script src="indicators/sync.js"></script>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -83,8 +86,26 @@
             </button>
             <div id="frvpToolStatus" class="tool-status"></div>
 
-            <!-- FRVP Overlays Control Panel -->
-            <div id="frvpControlPanel" class="frvp-control-panel"></div>
+            <button class="tool-btn" id="rayToolBtn" onclick="activateHorizontalRayTool()" title="Horizontal Ray Tool">
+                ➖ Horizontal Ray
+            </button>
+            <button class="tool-btn" onclick="initAlertModal()" title="Create Alert">
+                🔔 Create Alert
+            </button>
+            <button class="tool-btn" onclick="toggleAlertManager()" title="Manage Alerts">
+                📋 Active Alerts
+            </button>
+            <button class="tool-btn" onclick="toggleAlertManager()" title="Manage Alerts">
+                📋 Active Alerts
+            </button>
+            <button class="tool-btn" onclick="activateReplayTool()" title="Bar Replay Mode">
+                ⏪ Replay
+            </button>
+            <div id="drawingToolStatus" class="tool-status"></div>
+            <button class="tool-btn" onclick="clearAllTools()" title="Remove All Tools"
+                style="margin-left:auto; border-left:1px solid var(--border-color); color:#ef4444;">
+                🗑️ Reset
+            </button>
         </div>
 
         <div class="chart-container">
@@ -120,6 +141,7 @@
     <script>
         let chart = null;
         let activeIndicators = []; // Stores { id, type, instance, settings, elId }
+        window.activeIndicators = activeIndicators; // Expose for drawings.js
 
         // FRVP Tool State
         let frvpToolState = {
@@ -130,6 +152,100 @@
             clickHandler: null,
             editingOverlayId: null  // ID of overlay being edited
         };
+
+        // --- Legend System ---
+
+        /**
+         * Master Reset: Clear all tools (FRVP + Drawings)
+         */
+        const clearAllTools = () => {
+            if (!confirm('Are you sure you want to remove ALL tools (Rays, FRVP, etc.)?')) return;
+
+            // 1. Clear FRVP
+            if (frvpToolState.instances) {
+                frvpToolState.instances.forEach(inst => {
+                    // Remove both primitive and baseline
+                    if (inst.primitive && chart) {
+                        try { chart.removeSeries(inst.primitive); } catch (e) { }
+                    }
+                    if (inst.baseline && chart) {
+                        try { chart.removeSeries(inst.baseline); } catch (e) { }
+                    }
+                    if (inst.legendId && window.removeLegendItem) {
+                        window.removeLegendItem(inst.legendId);
+                    }
+                });
+                frvpToolState.instances = [];
+                // Clear persistent FRVP if any (future proof)
+            }
+
+            // 2. Clear Drawings (Rays)
+            if (window.clearAllDrawings) {
+                window.clearAllDrawings();
+            }
+
+            // 3. Clear Anchors if any active
+            frvpToolState.firstAnchor = null;
+            frvpToolState.secondAnchor = null;
+            frvpToolState.active = false;
+            updateFRVPStatus('');
+
+            // 4. Reset drawing tool state
+            if (window.deactivateDrawingTool) window.deactivateDrawingTool();
+
+            console.log('🧹 Master Reset Complete');
+            if (window.showToast) window.showToast('Reset Complete', 'All tools removed');
+        };
+
+        const initLegend = (containerId, paneId) => {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            // Remove existing if any
+            const existing = container.querySelector('.pane-legend');
+            if (existing) existing.remove();
+
+            const legend = document.createElement('div');
+            legend.className = 'pane-legend';
+            legend.id = `legend_${paneId}`;
+            container.appendChild(legend);
+            return legend;
+        };
+
+        const updateLegendItem = (paneId, itemId, title, values = [], actions = []) => {
+            const legend = document.getElementById(`legend_${paneId}`);
+            if (!legend) return;
+
+            let item = document.getElementById(`legend_item_${itemId}`);
+            if (!item) {
+                item = document.createElement('div');
+                item.className = 'legend-item';
+                item.id = `legend_item_${itemId}`;
+                legend.appendChild(item);
+            }
+
+            let valuesHtml = values.map(v => `<span>${v.label}: <b style="color: ${v.color || 'inherit'}">${v.value}</b></span>`).join('');
+
+            let actionsHtml = actions.map(a => `
+                <button class="legend-btn ${a.class || ''}" onclick="${a.onclick}" title="${a.title}">
+                    ${a.icon}
+                </button>
+            `).join('');
+
+            item.innerHTML = `
+                <div class="legend-title">${title}</div>
+                <div class="legend-values">${valuesHtml}</div>
+                <div class="legend-actions">${actionsHtml}</div>
+            `;
+        };
+
+        const removeLegendItem = (itemId) => {
+            const item = document.getElementById(`legend_item_${itemId}`);
+            if (item) item.remove();
+        };
+        window.updateLegendItem = updateLegendItem;
+        window.removeLegendItem = removeLegendItem;
+
         const frvpAnchors = []; // Track active anchors (Moved to top)
         let diffGeneration = 0; // Generation counter to prevent race conditions
 
@@ -288,8 +404,9 @@
          * Render the candlestick chart with robust lifecycle management
          */
         const renderChart = async () => {
-            // INCREMENT GENERATION: This invalidates any pending async operations from previous runs
-            const currentGen = ++diffGeneration;
+            // INCREMENT GENERATION
+            diffGeneration++;
+            const currentGen = diffGeneration;
 
             const loadingEl = document.getElementById('loading');
             const loadBtn = document.getElementById('loadBtn');
@@ -333,6 +450,14 @@
                 loadBtn.disabled = true;
                 chartEl.style.opacity = '0.3';
 
+                // Initialize Main Legend
+                initLegend('tvchart', 'main');
+                const symbolInput = document.getElementById('symbol').value;
+                const resolutionInput = document.getElementById('resolution').value;
+                updateLegendItem('main', 'series_info', symbolInput, [
+                    { label: '', value: `${resolutionInput}m`, color: 'var(--text-secondary)' }
+                ]);
+
                 // 2. DATA FETCH PHASE
                 const apiData = await getData();
 
@@ -346,6 +471,7 @@
                 const rangeFrom = document.getElementById('rangeFrom').value;
                 const rangeTo = document.getElementById('rangeTo').value;
                 klinedata = transformData(apiData, rangeFrom, rangeTo);
+                window.klinedata = klinedata; // Sync global for replay
 
                 if (klinedata.length === 0) {
                     throw new Error('No data available for the selected parameters');
@@ -371,20 +497,8 @@
                         borderColor: 'rgba(148, 163, 184, 0.3)',
                         timeVisible: true,
                         secondsVisible: false,
-                        tickMarkFormatter: (time, tickMarkType, locale) => {
+                        tickMarkFormatter: (time) => {
                             const date = new Date(time * 1000);
-
-                            // For day/month labels (tickMarkType 0-2)
-                            if (tickMarkType <= 2) {
-                                return new Intl.DateTimeFormat('en-US', {
-                                    timeZone: 'Asia/Kolkata',
-                                    day: '2-digit',
-                                    month: 'short'
-                                }).format(date);
-                            }
-
-                            // For time labels (tickMarkType 3+) - show in "DD MMM HH:mm" format
-                            // This matches the crosshair tooltip format
                             return new Intl.DateTimeFormat('en-US', {
                                 timeZone: 'Asia/Kolkata',
                                 day: '2-digit',
@@ -416,12 +530,13 @@
                         horzAlign: 'center',
                         vertAlign: 'center',
                         color: 'rgba(99, 102, 241, 0.1)',
-                        text: document.getElementById('symbol').value,
+                        text: symbolInput,
                     },
                 };
 
                 // Create new chart instance
                 chart = LightweightCharts.createChart(chartEl, chartProperties);
+                window.chart = chart; // Expose for drawings.js
 
                 // Add candlestick series
                 candleSeries = chart.addCandlestickSeries({
@@ -432,8 +547,95 @@
                     wickUpColor: '#10b981',
                     wickDownColor: '#ef4444',
                 });
+                window.candleSeries = candleSeries; // Expose for drawings.js
 
                 candleSeries.setData(klinedata);
+
+                // Central Click Dispatcher
+                chart.subscribeClick((param) => {
+                    // 1. Handle FRVP Click logic
+                    if (typeof handleFRVPChartClick === 'function') {
+                        handleFRVPChartClick(param);
+                    }
+
+                    // 2. Handle drawing tool click logic
+                    if (window.handleDrawingChartClick) {
+                        window.handleDrawingChartClick(param);
+                    }
+                });
+
+                // --- Candle Close Detection & Alert Warning ---
+                let lastCandleTime = null;
+                let isInitialLoad = true;
+
+                candleSeries.subscribeDataChanged(() => {
+                    const data = candleSeries.data();
+                    if (!data || data.length === 0) return;
+
+                    const lastCandle = data[data.length - 1];
+                    const currentCandleTime = lastCandle.time;
+
+                    // Initialize on first load
+                    if (isInitialLoad) {
+                        lastCandleTime = currentCandleTime;
+                        isInitialLoad = false;
+                        return;
+                    }
+
+                    // Detect new candle (meaning previous one closed)
+                    if (lastCandleTime !== null && currentCandleTime !== lastCandleTime) {
+                        console.log(`🕯️ Candle Closed at ${lastCandleTime}. New candle: ${currentCandleTime}`);
+
+                        // The candle that just closed is the one BEFORE the current lastCandle (length - 2)
+                        // OR if the update replaced the last candle, checking logic is tricky.
+                        // Standard assumption: New bar appears -> Previous bar is closed/finalized.
+                        // We evaluate the *previous* bar data.
+
+                        const closedCandleIndex = data.length - 2;
+                        if (closedCandleIndex >= 0) {
+                            const closedCandle = data[closedCandleIndex];
+
+                            // 1. Collect Price Data
+                            const candleCloseData = {
+                                barIndex: closedCandleIndex,
+                                time: closedCandle.time,
+                                price: { close: closedCandle.close }
+                            };
+
+                            // 2. Collect Indicator Data (CVD, etc.)
+                            if (window.activeIndicators) {
+                                window.activeIndicators.forEach(ind => {
+                                    if (ind.type === 'CVD' && ind.instance && ind.instance.series) {
+                                        const seriesData = ind.instance.series.data();
+                                        // Find data point matching the closed candle time
+                                        const point = seriesData.find(p => p.time === closedCandle.time);
+                                        if (point) {
+                                            candleCloseData.cvd = { close: point.close }; // CVD is usually candlestick or line
+                                        }
+                                    }
+                                    // Add logical blocks for other indicators here (RSI, etc.)
+                                    else if (ind.instance && ind.instance.series) {
+                                        const seriesData = ind.instance.series.data();
+                                        const point = seriesData.find(p => p.time === closedCandle.time);
+                                        if (point) {
+                                            // Handle both Line (value) and Candlestick (close) data types
+                                            const val = point.value !== undefined ? point.value : point.close;
+                                            candleCloseData[ind.type.toLowerCase()] = { close: val };
+                                        }
+                                    }
+                                });
+                            }
+
+                            // 3. Evaluate Alerts
+                            if (window.evaluateAlerts) {
+                                console.log('🔍 Evaluating alerts for closed candle:', candleCloseData);
+                                window.evaluateAlerts(candleCloseData);
+                            }
+                        }
+
+                        lastCandleTime = currentCandleTime;
+                    }
+                });
 
                 // Add SMA/EMA indicators
                 addSMAIndicator(chart, klinedata);
@@ -442,6 +644,35 @@
 
                 // Add default Volume Overlay
                 addVolumeOverlay(chart, klinedata, { showSma: true, smaPeriod: 20 });
+
+                // Alert Evaluation Hook & Legend Updates
+                chart.subscribeCrosshairMove((param) => {
+                    // Update Main Legend Values
+                    if (param.time) {
+                        const data = param.seriesData.get(candleSeries);
+                        if (data) {
+                            updateLegendItem('main', 'series_info', symbolInput, [
+                                { label: '', value: `${resolutionInput}m`, color: 'var(--text-secondary)' },
+                                { label: 'O', value: data.open.toFixed(2), color: data.close > data.open ? '#10b981' : '#ef4444' },
+                                { label: 'H', value: data.high.toFixed(2), color: data.close > data.open ? '#10b981' : '#ef4444' },
+                                { label: 'L', value: data.low.toFixed(2), color: data.close > data.open ? '#10b981' : '#ef4444' },
+                                { label: 'C', value: data.close.toFixed(2), color: data.close > data.open ? '#10b981' : '#ef4444' }
+                            ]);
+                        }
+                    }
+
+                    if (param.point && window.handleDrawingCrosshairMove) {
+                        param.paneId = 'main';
+                        window.handleDrawingCrosshairMove(param);
+                    }
+                    if (param.time && param.point && window.evaluateAlerts) {
+                        const price = param.seriesData.get(candleSeries)?.close ??
+                            param.seriesData.get(candleSeries)?.value;
+                        if (price != null) {
+                            window.evaluateAlerts(price, param.time, klinedata.length - 1, false);
+                        }
+                    }
+                });
 
                 // ========== RENDER ACTIVE INDICATORS ==========
                 renderActiveIndicators();
@@ -485,6 +716,16 @@
                 // Restore FRVP Overlays (Persistence)
                 await restoreFRVPState(savedFRVPConfigs);
 
+                // Restore Horizontal Rays and Alerts
+                if (window.restoreDrawings) {
+                    window.restoreDrawings();
+                }
+
+                // Initialize Drawing Tool Listeners (Hover/Drag)
+                if (window.setupDrawingListeners) {
+                    window.setupDrawingListeners();
+                }
+
                 console.log(`✅ Chart loaded successfully with ${klinedata.length} candles`);
 
             } catch (error) {
@@ -524,6 +765,8 @@
 
         // Static reference for data
         let klinedata = [];
+        window.klinedata = []; // Ensure it's exposed initially
+
 
         // Global Resize Observer to handle responsive layout without leaks
         window.resizeObserver = new ResizeObserver(() => {
@@ -546,8 +789,8 @@
         /**
          * Add a new indicator to the list
          */
-        const handleAddIndicator = () => {
-            const type = document.getElementById('indicatorSelect').value;
+        const handleAddIndicator = (typeOverride = null) => {
+            const type = typeOverride || document.getElementById('indicatorSelect').value;
             if (!type) return;
 
             const id = 'ind_' + Date.now() + Math.random().toString(36).substr(2, 5);
@@ -842,6 +1085,14 @@
                 card.remove();
             }
 
+            // Clean up drawings associated with this indicator
+            if (window.drawingStore && window.drawingStore.horizontalRays) {
+                const raysToDelete = window.drawingStore.horizontalRays.filter(r => r.pane === id);
+                raysToDelete.forEach(r => {
+                    if (window.deleteRay) window.deleteRay(r.id);
+                });
+            }
+
             // Remove from state
             activeIndicators.splice(index, 1);
 
@@ -872,13 +1123,53 @@
             const el = document.getElementById(ind.elId);
             if (!el) return;
 
+            // Initialize Legend for this pane
+            initLegend(ind.elId, ind.id);
+            updateLegendItem(ind.id, `info_${ind.id}`, ind.type);
+
             // Cleanup existing instance if any (for refetch/update)
             // But reuse container
             if (ind.instance) {
                 try { ind.instance.chart.remove(); } catch (e) { }
             }
 
-            // Check generation safety? No, this is synchronous mostly, but called from async renderChart
+            // Centralized hook for drawing tools on indicator panes
+            const hookDrawingTool = (instance, paneId) => {
+                if (instance && instance.chart) {
+                    instance.chart.subscribeClick((param) => {
+                        param.paneId = paneId;
+                        if (window.handleDrawingChartClick) {
+                            window.handleDrawingChartClick(param);
+                        }
+                    });
+                    instance.chart.subscribeCrosshairMove((param) => {
+                        // Update Legend Value
+                        if (param.time && instance.series) {
+                            const data = param.seriesData.get(instance.series);
+                            if (data !== undefined) {
+                                let valStr = typeof data === 'object' ? (data.value !== undefined ? data.value.toFixed(2) : data.close.toFixed(2)) : data.toFixed(2);
+
+                                // Special formatting for CVD
+                                if (ind.type === 'CVD' && !isNaN(data.close)) {
+                                    const absVal = Math.abs(data.close);
+                                    if (absVal >= 1000000) valStr = (data.close / 1000000).toFixed(2) + 'M';
+                                    else if (absVal >= 1000) valStr = (data.close / 1000).toFixed(1) + 'K';
+                                    else valStr = data.close.toFixed(0);
+                                }
+
+                                updateLegendItem(paneId, `info_${paneId}`, ind.type, [
+                                    { label: '', value: valStr }
+                                ]);
+                            }
+                        }
+
+                        if (param.point && window.handleDrawingCrosshairMove) {
+                            param.paneId = paneId;
+                            window.handleDrawingCrosshairMove(param);
+                        }
+                    });
+                }
+            };
 
             try {
                 if (ind.type === 'RSI') {
@@ -924,6 +1215,10 @@
                                     }
                                 } catch (e) { console.warn('CVD sync failed', e); }
                             }
+                            // Hook drawings
+                            if (typeof hookDrawingTool === 'function') hookDrawingTool(ind.instance, ind.id);
+                            // [FIX] Restore drawings for this async pane
+                            if (window.renderDrawingsForPane) window.renderDrawingsForPane(ind.id);
                         })
                         .catch(err => {
                             console.error('Failed to calculate CVD:', err);
@@ -950,6 +1245,10 @@
                                     }
                                 } catch (e) { console.warn('FRVP sync failed', e); }
                             }
+                            // Hook drawings
+                            if (typeof hookDrawingTool === 'function') hookDrawingTool(ind.instance, ind.id);
+                            // [FIX] Restore drawings for this async pane
+                            if (window.renderDrawingsForPane) window.renderDrawingsForPane(ind.id);
                         })
                         .catch(err => {
                             console.error('Failed to calculate FRVP:', err);
@@ -958,6 +1257,13 @@
                 }
             } catch (e) {
                 console.error('Failed to render indicator', ind.type, e);
+            }
+
+            // Hook for all indicators
+            if (ind.instance) {
+                hookDrawingTool(ind.instance, ind.id);
+                // [FIX] Always try to restore drawings for this pane
+                if (window.renderDrawingsForPane) window.renderDrawingsForPane(ind.id);
             }
         };
 
@@ -978,11 +1284,9 @@
             // Change cursor
             document.getElementById('tvchart').style.cursor = 'crosshair';
 
-            // Subscribe to chart clicks
-            if (chart) {
-                frvpToolState.clickHandler = handleFRVPChartClick;
-                chart.subscribeClick(frvpToolState.clickHandler);
-            }
+            // Subscribe to chart clicks - Handled by central dispatcher in renderChart
+            frvpToolState.clickHandler = handleFRVPChartClick;
+            // chart.subscribeClick(frvpToolState.clickHandler); // REMOVED: using central dispatcher
         }
 
         function deactivateFRVPTool() {
@@ -999,11 +1303,12 @@
             // Reset cursor
             document.getElementById('tvchart').style.cursor = 'default';
 
-            // Unsubscribe from clicks
-            if (chart && frvpToolState.clickHandler) {
-                chart.unsubscribeClick(frvpToolState.clickHandler);
-                frvpToolState.clickHandler = null;
-            }
+            // Unsubscribe from clicks - Handled by central dispatcher
+            // if (chart && frvpToolState.clickHandler) {
+            //     chart.unsubscribeClick(frvpToolState.clickHandler);
+            //     frvpToolState.clickHandler = null;
+            // }
+            frvpToolState.clickHandler = null;
         }
 
         function updateFRVPToolStatus(message) {
@@ -1330,7 +1635,14 @@
 
                 // Add to state immediately so we can track it
                 frvpToolState.instances.push(overlay);
-                updateFRVPControlPanel();
+
+                // [NEW] Register in Status Legend
+                const overlayIndex = frvpToolState.instances.length;
+                window.updateLegendItem('main', overlayId, `FRVP #${overlayIndex}`, [], [
+                    { icon: '✏️', title: 'Edit Range', class: 'edit-btn', onclick: `window.editFRVPRange('${overlayId}')` },
+                    { icon: '⚙️', title: 'Settings', class: 'settings-btn', onclick: `window.openFRVPSettings('${overlayId}')` },
+                    { icon: '🗑️', title: 'Delete', class: 'delete-btn', onclick: `window.removeFRVPOverlay('${overlayId}')` }
+                ]);
 
                 // Create range-limited line series for POC
                 if (profileData.config.indicators?.POC?.enabled) {
@@ -1605,32 +1917,7 @@
             return `rgba(${r}, ${g}, ${b}, ${alpha})`;
         }
 
-        function updateFRVPControlPanel() {
-            const panel = document.getElementById('frvpControlPanel');
-            if (!panel) return;
-
-            // Clear existing controls
-            panel.innerHTML = '';
-
-            // Add control for each overlay
-            frvpToolState.instances.forEach((overlay, index) => {
-                const controlDiv = document.createElement('div');
-                controlDiv.className = 'frvp-overlay-control';
-                controlDiv.innerHTML = `
-                    <span class="frvp-overlay-label">FRVP #${index + 1}</span>
-                    <button class="frvp-control-btn edit-btn" onclick="editFRVPRange('${overlay.id}')" title="Edit Range">
-                        ✏️ Edit
-                    </button>
-                    <button class="frvp-control-btn settings-btn" onclick="openFRVPSettings('${overlay.id}')" title="Settings">
-                        ⚙️ Settings
-                    </button>
-                    <button class="frvp-control-btn delete-btn" onclick="removeFRVPOverlay('${overlay.id}')" title="Delete">
-                        🗑️ Delete
-                    </button>
-                `;
-                panel.appendChild(controlDiv);
-            });
-        }
+        // REMOVED: updateFRVPControlPanel (Now using LegendManager)
 
         function openFRVPSettings(overlayId) {
             const overlay = frvpToolState.instances.find(o => o.id === overlayId);
@@ -1983,8 +2270,10 @@
                 if (idx > -1) frvpAnchors.splice(idx, 1);
             }
 
-            // Update control panel
-            updateFRVPControlPanel();
+            // [NEW] Remove from Status Legend
+            if (window.removeLegendItem) {
+                window.removeLegendItem(overlayId);
+            }
 
             if (closeModal) {
                 closeFRVPSettings(overlayId);
@@ -2011,8 +2300,21 @@
             });
         });
 
-        window.addEventListener('load', () => {
-            renderChart();
+        // Expose FRVP handlers globally for Legend access
+        window.editFRVPRange = editFRVPRange;
+        window.openFRVPSettings = openFRVPSettings;
+        window.removeFRVPOverlay = removeFRVPOverlay;
+        window.closeFRVPSettings = closeFRVPSettings;
+        window.applyFRVPSettings = applyFRVPSettings;
+        window.activateFRVPTool = activateFRVPTool;
+
+        window.addEventListener('load', async () => {
+            await renderChart();
+
+            // Default: Enable CVD if not present
+            if (!activeIndicators.some(i => i.type === 'CVD')) {
+                handleAddIndicator('CVD');
+            }
         });
     </script>
 </body>

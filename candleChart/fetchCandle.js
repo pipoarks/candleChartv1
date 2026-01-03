@@ -10,6 +10,38 @@ const FYERS_TOKEN = "E3D5D0NFAV-100:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQ
 
 
 app.use(cors());
+app.use(express.json()); // Enable JSON body parsing for proxy
+
+/**
+ * CORS Proxy for Webhooks
+ * Bypasses browser restrictions by sending the request from the Node server
+ */
+app.post('/proxy_webhook', async (req, res) => {
+  try {
+    const { url, method = 'POST', headers = {}, body } = req.body;
+
+    if (!url) {
+      return res.status(400).json({ error: 'Target URL is required' });
+    }
+
+    console.log(`[Proxy] Forwarding ${method} to ${url}`);
+
+    const response = await fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: typeof body === 'string' ? body : JSON.stringify(body)
+    });
+
+    const responseText = await response.text();
+    console.log(`[Proxy] Response: ${response.status} ${response.statusText}`);
+
+    res.status(response.status).send(responseText);
+
+  } catch (err) {
+    console.error('[Proxy] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /**
  * Health check

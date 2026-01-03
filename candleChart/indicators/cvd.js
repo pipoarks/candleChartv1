@@ -317,6 +317,17 @@ const createCVDChart = (el, cvdData, options = {}) => {
             visible: true,
             borderColor: 'rgba(148, 163, 184, 0.2)',
         },
+        localization: {
+            priceFormatter: (price) => {
+                const absPrice = Math.abs(price);
+                if (absPrice >= 1000000) {
+                    return (price / 1000000).toFixed(2) + 'M';
+                } else if (absPrice >= 1000) {
+                    return (price / 1000).toFixed(1) + 'K';
+                }
+                return price.toFixed(0);
+            }
+        }
     };
 
     const chart = LightweightCharts.createChart(el, chartProperties);
