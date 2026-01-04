@@ -87,7 +87,7 @@ const calculateMACD = (data, { fastLength = 12, slowLength = 26, signalLength = 
 const createMACDChart = (containerEl, macdData, options = {}) => {
     // Shared chart props
     const chartProperties = {
-        layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+        layout: { background: { color: 'transparent' }, textColor: '#94a3b8', fontSize: 20 },
         grid: { vertLines: { color: 'rgba(148, 163, 184, 0.1)' }, horzLines: { color: 'rgba(148, 163, 184, 0.1)' } },
         crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
         rightPriceScale: { borderColor: 'rgba(148, 163, 184, 0.2)' },

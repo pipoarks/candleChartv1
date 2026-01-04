@@ -192,6 +192,7 @@
             clickHandler: null,
             editingOverlayId: null  // ID of overlay being edited
         };
+        window.frvpToolState = frvpToolState; // Global exposure for alert system
 
         // --- Legend System ---
 
@@ -523,6 +524,7 @@
                     layout: {
                         background: { color: '#ffffff' }, // White background
                         textColor: '#333333',
+                        fontSize: 20,
                     },
                     grid: {
                         vertLines: { color: 'rgba(148, 163, 184, 0.15)' }, // More visible grid
@@ -1595,7 +1597,7 @@
 
             // 1. Recalculate Profile
             const rangeCandles = klinedata.filter(c => c.time >= startTime && c.time <= endTime);
-            const symbol = document.getElementById('symbol').value;
+            const symbol = window.getTechnicalSymbol(document.getElementById('symbol').value);
             // Format dates
             const startDate = new Date(startTime * 1000);
             const endDate = new Date(endTime * 1000);
@@ -1672,7 +1674,7 @@
 
                 const rangeFrom = new Date(startTime * 1000).toISOString().split('T')[0];
                 const rangeTo = new Date(endTime * 1000).toISOString().split('T')[0];
-                const symbol = document.getElementById('symbol').value;
+                const symbol = window.getTechnicalSymbol(document.getElementById('symbol').value);
 
                 // Use existing ID or generate new
                 if (!overlayId) {

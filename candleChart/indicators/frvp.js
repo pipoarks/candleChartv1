@@ -11,6 +11,11 @@
  * @returns {Promise<Array>} Array of 1-minute OHLCV bars
  */
 async function fetchOneMinuteDataForFRVP(symbol, rangeFrom, rangeTo) {
+    // [SAFETY]: Ensure technical symbol format (NSE:SYMBOL-EQ)
+    if (window.getTechnicalSymbol) {
+        symbol = window.getTechnicalSymbol(symbol);
+    }
+
     const url = `http://localhost:3000/history-1min?symbol=${encodeURIComponent(symbol)}&date_format=1&range_from=${rangeFrom}&range_to=${rangeTo}&cont_flag=1`;
 
     try {
@@ -131,6 +136,7 @@ function createFRVPChart(el, profileData, config) {
         layout: {
             background: { color: 'transparent' },
             textColor: '#94a3b8',
+            fontSize: 20,
         },
         grid: {
             vertLines: { color: 'rgba(148, 163, 184, 0.1)' },

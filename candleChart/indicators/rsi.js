@@ -89,6 +89,7 @@ const createRSIChart = (rsiChartEl, rsiData, options = {}) => {
         layout: {
             background: { color: 'transparent' },
             textColor: '#94a3b8',
+            fontSize: 20,
         },
         grid: {
             vertLines: { color: 'rgba(148, 163, 184, 0.1)' },

@@ -17,34 +17,83 @@ const comparisonOperators = {
 /** AVAILABLE RESOURCES HELPERS */
 function getAvailableHorizontalLines() {
     const lines = [];
-    if (!window.drawingStore || !window.drawingStore.horizontalRays) return lines;
-    window.drawingStore.horizontalRays.forEach(ray => {
-        let paneName = 'Main Chart';
-        let dataType = 'Price';
-        if (ray.pane !== 'main') {
-            const indicator = (window.activeIndicators || []).find(ind => ind.id === ray.pane);
-            if (indicator) { paneName = indicator.type; dataType = indicator.type; }
-        }
-        lines.push({
-            id: ray.id,
-            name: `Horizontal Ray #${ray.number}`,
-            value: ray.price,
-            pane: ray.pane,
-            paneName: paneName,
-            dataType: dataType,
-            displayText: `Ray #${ray.number} - ${paneName} (${Number(ray.price).toFixed(2)})`
+
+    // 1. Standard Horizontal Rays
+    if (window.drawingStore && window.drawingStore.horizontalRays) {
+        window.drawingStore.horizontalRays.forEach(ray => {
+            let paneName = 'Main Chart';
+            let dataType = 'Price';
+            if (ray.pane !== 'main') {
+                const indicator = (window.activeIndicators || []).find(ind => ind.id === ray.pane);
+                if (indicator) { paneName = indicator.type; dataType = indicator.type; }
+            }
+            lines.push({
+                id: ray.id,
+                name: `Horizontal Ray #${ray.number}`,
+                value: ray.price,
+                pane: ray.pane,
+                paneName: paneName,
+                dataType: dataType,
+                displayText: `Ray #${ray.number} - ${paneName} (${Number(ray.price).toFixed(2)})`
+            });
         });
-    });
+    }
+
+    // 2. FRVP Overlay Tools (User placed)
+    if (window.frvpToolState && window.frvpToolState.instances) {
+        window.frvpToolState.instances.forEach((inst, idx) => {
+            const p = inst.profileData;
+            if (!p) return;
+
+            // Group user-placed tools specifically as "FRVP TOOLS"
+            const groupName = 'FRVP TOOLS';
+            const toolPrefix = `FRVP #${idx + 1}`;
+
+            if (p.poc) lines.push({ id: `${inst.id}_POC`, name: `${toolPrefix} POC`, value: p.poc.priceLevel, pane: 'main', paneName: groupName, dataType: 'Price', displayText: `${toolPrefix} - POC (Center Line) @ ${p.poc.priceLevel.toFixed(2)}`, frvpType: 'poc', overlayId: inst.id });
+            if (p.vah) lines.push({ id: `${inst.id}_VAH`, name: `${toolPrefix} High`, value: p.vah.priceLevel, pane: 'main', paneName: groupName, dataType: 'Price', displayText: `${toolPrefix} - High (HN/VAH) @ ${p.vah.priceLevel.toFixed(2)}`, frvpType: 'vah', overlayId: inst.id });
+            if (p.val) lines.push({ id: `${inst.id}_VAL`, name: `${toolPrefix} Low`, value: p.val.priceLevel, pane: 'main', paneName: groupName, dataType: 'Price', displayText: `${toolPrefix} - Low (LN/VAL) @ ${p.val.priceLevel.toFixed(2)}`, frvpType: 'val', overlayId: inst.id });
+        });
+    }
+
+    // 3. FRVP Indicators (Pane based)
+    if (window.activeIndicators) {
+        window.activeIndicators.filter(ind => ind.type === 'FRVP').forEach((ind, idx) => {
+            const p = ind.instance?.profileData || ind.instance?.profile; // Flexible check
+            if (!p) return;
+            const groupName = 'FRVP INDICATORS';
+
+            if (p.poc) lines.push({ id: `${ind.id}_POC`, name: `FRVP Ind POC`, value: p.poc.priceLevel, pane: ind.id, paneName: groupName, dataType: 'Price', displayText: `Indicator - POC (Center) @ ${p.poc.priceLevel.toFixed(2)}`, frvpType: 'poc', indicatorId: ind.id });
+            if (p.vah) lines.push({ id: `${ind.id}_VAH`, name: `FRVP Ind High`, value: p.vah.priceLevel, pane: ind.id, paneName: groupName, dataType: 'Price', displayText: `Indicator - High (VAH) @ ${p.vah.priceLevel.toFixed(2)}`, frvpType: 'vah', indicatorId: ind.id });
+            if (p.val) lines.push({ id: `${ind.id}_VAL`, name: `FRVP Ind Low`, value: p.val.priceLevel, pane: ind.id, paneName: groupName, dataType: 'Price', displayText: `Indicator - Low (VAL) @ ${p.val.priceLevel.toFixed(2)}`, frvpType: 'val', indicatorId: ind.id });
+        });
+    }
+
+    console.log('📋 Available Alert Lines:', lines);
     return lines;
 }
 
 function getAvailableDataSources() {
     const sources = [{ id: 'price', name: 'Price (Main Chart)', pane: 'main', displayText: 'Price Close' }];
+
+    // 1. Indicators
     if (window.activeIndicators) {
         window.activeIndicators.forEach(ind => {
             sources.push({ id: ind.type.toLowerCase(), name: `${ind.type} Close`, pane: ind.id, displayText: `${ind.type} Close` });
         });
     }
+
+    // 2. FRVP Tool Levels as Sources
+    if (window.frvpToolState && window.frvpToolState.instances) {
+        window.frvpToolState.instances.forEach((inst, idx) => {
+            const p = inst.profileData;
+            if (!p) return;
+            const toolPrefix = `FRVP #${idx + 1}`;
+            if (p.poc) sources.push({ id: `frvp_${inst.id}_poc`, name: `${toolPrefix} POC`, pane: 'main', displayText: `${toolPrefix} POC`, frvpType: 'poc', overlayId: inst.id });
+            if (p.vah) sources.push({ id: `frvp_${inst.id}_vah`, name: `${toolPrefix} High`, pane: 'main', displayText: `${toolPrefix} High (HN)`, frvpType: 'vah', overlayId: inst.id });
+            if (p.val) sources.push({ id: `frvp_${inst.id}_val`, name: `${toolPrefix} Low`, pane: 'main', displayText: `${toolPrefix} Low (LN)`, frvpType: 'val', overlayId: inst.id });
+        });
+    }
+
     return sources;
 }
 
@@ -146,6 +195,9 @@ function initAlertModal(preselectedRayId = null, alertToEdit = null) {
                     <div class="alert-placeholder-list">
                          <span class="placeholder-chip" onclick="insertPlaceholder('alert-message', '{{symbol}}')">{{symbol}}</span>
                          <span class="placeholder-chip" onclick="insertPlaceholder('alert-message', '{{timeframe}}')">{{timeframe}}</span>
+                         <span class="placeholder-chip" onclick="insertPlaceholder('alert-message', '{{poc}}')">{{poc}}</span>
+                         <span class="placeholder-chip" onclick="insertPlaceholder('alert-message', '{{vah}}')">{{vah}}</span>
+                         <span class="placeholder-chip" onclick="insertPlaceholder('alert-message', '{{val}}')">{{val}}</span>
                     </div>
                 </div>
 
@@ -167,6 +219,9 @@ function initAlertModal(preselectedRayId = null, alertToEdit = null) {
                               <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{close}}')">{{close}}</span>
                               <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{message}}')">{{message}}</span>
                               <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{alert_name}}')">{{alert_name}}</span>
+                              <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{poc}}')">{{poc}}</span>
+                              <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{vah}}')">{{vah}}</span>
+                              <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{val}}')">{{val}}</span>
                         </div>
                     </div>
                 </div>
@@ -291,9 +346,9 @@ function createAlert() {
             alertObj.name = alertName || document.getElementById('symbol').value;
             alertObj.conditions = conditions;
             alertObj.triggerLimit = triggerLimit;
-            if (alertObj.triggerLimit !== -1 && alertObj.triggerCount >= alertObj.triggerLimit) {
-                alertObj.isActive = true;
-            }
+            alertObj.triggerCount = 0; // Reset count on edit to start fresh
+            alertObj.isActive = true; // Always re-activate when user saves changes
+            alertObj.lastTriggeredBar = -1; // Reset bar history
             alertObj.expiration = document.getElementById('alert-expiration').value;
             alertObj.message = document.getElementById('alert-message').value;
             alertObj.notifyToast = document.getElementById('notify-toast').checked;
@@ -334,7 +389,7 @@ function createAlert() {
 
 /** EVALUATE ALERTS */
 function evaluateAlerts(candleCloseData) {
-    const symbol = document.getElementById('symbol').value;
+    const symbol = window.getTechnicalSymbol ? window.getTechnicalSymbol(document.getElementById('symbol').value) : document.getElementById('symbol').value;
     const timeframe = document.getElementById('resolution').value;
     const lines = getAvailableHorizontalLines();
 
@@ -350,12 +405,45 @@ function evaluateAlerts(candleCloseData) {
         const allConditionsMet = alert.conditions.every((cond, i) => {
             const line = lines.find(l => l.id === cond.horizontalLineId);
             if (!line) return false;
-            cond.horizontalLineValue = line.value;
+
+            // Re-fetch dynamic FRVP value if needed
+            let currentLineValue = line.value;
+            if (line.frvpType) {
+                if (line.overlayId && window.frvpToolState) {
+                    const inst = window.frvpToolState.instances.find(o => o.id === line.overlayId);
+                    if (inst && inst.profileData && inst.profileData[line.frvpType]) {
+                        currentLineValue = inst.profileData[line.frvpType].priceLevel;
+                    }
+                } else if (line.indicatorId && window.activeIndicators) {
+                    const ind = window.activeIndicators.find(i => i.id === line.indicatorId);
+                    const p = ind?.instance?.profileData;
+                    if (p && p[line.frvpType]) {
+                        currentLineValue = p[line.frvpType].priceLevel;
+                    }
+                }
+            }
+
+            cond.horizontalLineValue = currentLineValue;
 
             let val = null;
             if (cond.dataSource === 'price') val = candleCloseData.price?.close;
             else if (cond.dataSource === 'cvd') val = candleCloseData.cvd?.close;
-            else if (candleCloseData[cond.dataSource]) val = candleCloseData[cond.dataSource]?.close;
+            else if (cond.dataSource.startsWith('frvp_')) {
+                // Fetch dynamic FRVP value as source
+                const parts = cond.dataSource.split('_'); // frvp_[id]_type
+                const overlayId = parts.slice(1, -1).join('_');
+                const type = parts[parts.length - 1];
+                if (window.frvpToolState) {
+                    const inst = window.frvpToolState.instances.find(o => o.id === overlayId);
+                    if (inst && inst.profileData && inst.profileData[type]) {
+                        val = inst.profileData[type].priceLevel;
+                    }
+                }
+            }
+            else if (candleCloseData[cond.dataSource]) {
+                val = candleCloseData[cond.dataSource]?.close;
+            }
+
             if (val === null || val === undefined) return false;
 
             const trackingKey = `${alert.id}_${i}`;
@@ -377,12 +465,39 @@ function evaluateAlerts(candleCloseData) {
     });
 }
 
+/** RESET ALERT HISTORY (For Replay or Symbol Change) */
+function resetAlertHistory() {
+    if (!window.alertStore) return;
+    window.alertStore.lastValues = {};
+    window.alertStore.alerts.forEach(alert => {
+        alert.lastTriggeredBar = -1;
+    });
+    console.log('🔄 Alert history reset (ready for replay/fresh check)');
+}
+
 function handleAlertTrigger(alert, data, symbol, timeframe) {
     if (alert.lastTriggeredBar === data.barIndex) return;
     alert.lastTriggeredBar = data.barIndex;
     alert.triggerCount++;
 
-    let msg = alert.message.replace(/{{symbol}}/g, symbol).replace(/{{timeframe}}/g, timeframe);
+    // Gather FRVP values for placeholders
+    let pocVal = 'N/A', vahVal = 'N/A', valVal = 'N/A';
+    if (window.frvpToolState && window.frvpToolState.instances.length > 0) {
+        const p = window.frvpToolState.instances[0].profileData; // Use first one as default for placeholders
+        if (p) {
+            pocVal = p.poc.priceLevel.toFixed(2);
+            vahVal = p.vah.priceLevel.toFixed(2);
+            valVal = p.val.priceLevel.toFixed(2);
+        }
+    }
+
+    let msg = alert.message
+        .replace(/{{symbol}}/g, symbol)
+        .replace(/{{timeframe}}/g, timeframe)
+        .replace(/{{poc}}/g, pocVal)
+        .replace(/{{vah}}/g, vahVal)
+        .replace(/{{val}}/g, valVal);
+
     if (alert.notifyToast) showToast(`🔔 ${alert.name}`, msg);
     if (alert.notifySound) playAlertSound();
 
@@ -763,6 +878,7 @@ window.showAlertLogs = showAlertLogs;
 window.clearAlertLogs = clearAlertLogs;
 
 window.toggleSidebarTab = toggleSidebarTab;
+window.resetAlertHistory = resetAlertHistory;
 window.switchSidebarTab = switchSidebarTab;
 window.closeSidebar = closeSidebar;
 window.renderSideAlerts = renderSideAlerts;

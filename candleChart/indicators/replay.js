@@ -66,6 +66,9 @@ function startReplay(startIndex) {
         return null;
     }).filter(Boolean);
 
+    // Reset alert history so they move with the replay
+    if (window.resetAlertHistory) window.resetAlertHistory();
+
     // Initial Slice
     updateChartState(startIndex);
 
@@ -188,24 +191,24 @@ function showReplayControls() {
     const panel = document.createElement('div');
     panel.id = 'replay-controls';
     panel.style.cssText = `
-        position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
-        background: rgba(15, 23, 42, 0.9); border: 1px solid var(--border-color);
-        padding: 10px 20px; border-radius: 50px; display: flex; gap: 15px; align-items: center;
-        box-shadow: 0 10px 20px rgba(0,0,0,0.5); z-index: 1000; backdrop-filter: blur(5px);
+        position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+        background: rgba(15, 23, 42, 0.95); border: 1px solid var(--border-color);
+        padding: 15px 30px; border-radius: 60px; display: flex; gap: 20px; align-items: center;
+        box-shadow: 0 15px 30px rgba(0,0,0,0.6); z-index: 1000; backdrop-filter: blur(8px);
     `;
 
     panel.innerHTML = `
-        <button onclick="toggleReplayPlay()" id="replay-play-btn" style="background:none; border:none; color:white; font-size:1.5rem; cursor:pointer;">▶</button>
-        <button onclick="stepForward()" style="background:none; border:none; color:white; font-size:1.2rem; cursor:pointer;">▶|</button>
-        <div style="height:20px; width:1px; background:rgba(255,255,255,0.2);"></div>
-        <select onchange="setReplaySpeed(this.value)" style="background:rgba(255,255,255,0.1); border:none; color:white; padding:5px; border-radius:4px;">
+        <button onclick="toggleReplayPlay()" id="replay-play-btn" style="background:none; border:none; color:white; font-size:2rem; cursor:pointer;">▶</button>
+        <button onclick="stepForward()" style="background:none; border:none; color:white; font-size:1.6rem; cursor:pointer;">▶|</button>
+        <div style="height:30px; width:1px; background:rgba(255,255,255,0.2);"></div>
+        <select onchange="setReplaySpeed(this.value)" style="background:rgba(255,255,255,0.1); border:none; color:white; padding:8px 12px; border-radius:8px; font-size: 1.25rem;">
             <option value="1000">1x</option>
             <option value="333">3x</option>
             <option value="100">10x</option>
             <option value="30">MAX</option>
         </select>
-        <div style="height:20px; width:1px; background:rgba(255,255,255,0.2);"></div>
-        <button onclick="exitReplay()" style="background:none; border:none; color:#ef4444; font-size:1rem; cursor:pointer; font-weight:600;">✕ Exit</button>
+        <div style="height:30px; width:1px; background:rgba(255,255,255,0.2);"></div>
+        <button onclick="exitReplay()" style="background:none; border:none; color:#ef4444; font-size: 1.35rem; cursor:pointer; font-weight:700;">✕ Exit</button>
     `;
 
     document.body.appendChild(panel);
