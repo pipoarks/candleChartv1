@@ -47,21 +47,21 @@ const DEFAULT_FRVP_CONFIG = {
     indicators: {
         VAH: {
             enabled: true,
-            color: '#ffc107',
+            color: '#0000ff',
             lineStyle: 'solid',     // 'solid', 'dashed', 'dotted'
             width: 2
         },
         VAL: {
             enabled: true,
-            color: '#ffc107',
+            color: '#0000ff',
             lineStyle: 'solid',
             width: 2
         },
         POC: {
             enabled: true,
             color: '#000000',
-            lineStyle: 'dotted',
-            width: 2
+            lineStyle: 'solid',
+            width: 5
         },
         developingPOC: {
             enabled: false,
@@ -196,9 +196,9 @@ function getFRVPPresets() {
                 enabled: false
             },
             indicators: {
-                VAH: { enabled: true, color: '#ffc107', lineStyle: 'solid', width: 2 },
-                VAL: { enabled: true, color: '#ffc107', lineStyle: 'solid', width: 2 },
-                POC: { enabled: true, color: '#000000', lineStyle: 'solid', width: 3 },
+                VAH: { enabled: true, color: '#0000ff', lineStyle: 'solid', width: 2 },
+                VAL: { enabled: true, color: '#0000ff', lineStyle: 'solid', width: 2 },
+                POC: { enabled: true, color: '#000000', lineStyle: 'solid', width: 5 },
                 developingPOC: { enabled: false },
                 developingVA: { enabled: false }
             }

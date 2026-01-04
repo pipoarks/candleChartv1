@@ -1,0 +1,10 @@
+[1/4/2026, 6:49:57 PM] [NSE:BSE-EQ] ALERT: BSE - Alert Triggered: NSE:BSE-EQ conditions met.
+[1/4/2026, 6:57:18 PM] [NSE:BSE-EQ] ALERT: BSE - Alert Triggered: NSE:BSE-EQ conditions met.
+
+[1/4/2026, 7:00:27 PM] [NSE:IIFL-EQ] ALERT: IIFL - Alert Triggered: NSE:IIFL-EQ conditions met.
+--- Market Snapshot ---
+PRICE: O:undefined H:undefined L:undefined C:617.15 V:undefined
+FRVP #1: POC:614.66 VAH:615.49 VAL:612.53
+INDICATORS: CVD:112546.00
+-----------------------
+

@@ -2,15 +2,70 @@ console.log('FetchCandle module loaded');
 
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = 3000;
+
+// Path to audit log file
+const AUDIT_LOG_FILE = path.join(__dirname, 'alert_audit.txt');
 
 const FYERS_TOKEN = "E3D5D0NFAV-100:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiZDoxIiwiZDoyIiwieDowIiwieDoxIiwieDoyIl0sImF0X2hhc2giOiJnQUFBQUFCcFdqRUMtOW5qck9pOHZnaG5oVVhqNUlGRlhPNnhxTUNSMDNNVWVETk1iU2thblVkTllTRTlZdXhNUnZkSkRmSS01bk54bDVFWDdGb05iSDNoSFdoVTh4enFwNjloT0VZMU03Nmo1c21hakxXZC12dz0iLCJkaXNwbGF5X25hbWUiOiIiLCJvbXMiOiJLMSIsImhzbV9rZXkiOiIyNjFjYzY2ODc1NDA3ZWI1ZjgyZDA0MTA2MDBlZTJjNmI5NWExOWQyZjA2ODdlODM4NzQyODE5MyIsImlzRGRwaUVuYWJsZWQiOiJOIiwiaXNNdGZFbmFibGVkIjoiTiIsImZ5X2lkIjoiWUE0NDA3NyIsImFwcFR5cGUiOjEwMCwiZXhwIjoxNzY3NTczMDAwLCJpYXQiOjE3Njc1MTg0NjYsImlzcyI6ImFwaS5meWVycy5pbiIsIm5iZiI6MTc2NzUxODQ2Niwic3ViIjoiYWNjZXNzX3Rva2VuIn0.Ur0IAsnigjqq6_2MYez85iPUrgXQa53RbOIU4zMPSSw";
 
 
 app.use(cors());
 app.use(express.json()); // Enable JSON body parsing for proxy
+
+/**
+ * Audit Logger
+ * Appends alert trigger events to a permanent text file
+ */
+app.post('/audit-log', (req, res) => {
+  try {
+    const { message, symbol, alertName, time, snapshot } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const timestamp = time ? new Date(time).toLocaleString() : new Date().toLocaleString();
+    let logEntry = `[${timestamp}] [${symbol || 'N/A'}] ALERT: ${alertName || 'Unnamed'} - ${message}\n`;
+
+    if (snapshot) {
+      logEntry += `--- Market Snapshot ---\n`;
+      if (snapshot.price) {
+        logEntry += `PRICE: O:${snapshot.price.open} H:${snapshot.price.high} L:${snapshot.price.low} C:${snapshot.price.close} V:${snapshot.price.volume}\n`;
+      }
+      if (snapshot.frvp && snapshot.frvp.length > 0) {
+        snapshot.frvp.forEach((f, i) => {
+          logEntry += `FRVP #${i + 1}: POC:${f.poc} VAH:${f.vah} VAL:${f.val}\n`;
+        });
+      }
+      if (snapshot.indicators && Object.keys(snapshot.indicators).length > 0) {
+        logEntry += `INDICATORS: `;
+        const indStrings = Object.entries(snapshot.indicators).map(([name, val]) => `${name}:${val}`);
+        logEntry += indStrings.join(' | ') + '\n';
+      }
+      logEntry += `-----------------------\n\n`;
+    } else {
+      logEntry += `\n`;
+    }
+
+    fs.appendFile(AUDIT_LOG_FILE, logEntry, (err) => {
+      if (err) {
+        console.error('[Audit] Failed to write to file:', err);
+        return res.status(500).json({ error: 'Failed to write audit log' });
+      }
+      console.log(`[Audit] Snapshot logged: ${alertName}`);
+      res.json({ status: 'Logged' });
+    });
+
+  } catch (err) {
+    console.error('[Audit] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /**
  * CORS Proxy for Webhooks

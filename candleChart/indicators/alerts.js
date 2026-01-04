@@ -4,6 +4,59 @@ window.alertStore = {
     logs: [] // Webhook logs
 };
 
+/** PERSISTENCE HELPERS */
+const ALERT_STORAGE_KEY = 'trading_alerts_data';
+
+function saveAlertStore() {
+    try {
+        const data = {
+            alerts: window.alertStore.alerts,
+            logs: window.alertStore.logs
+        };
+        localStorage.setItem(ALERT_STORAGE_KEY, JSON.stringify(data));
+    } catch (e) {
+        console.error('Failed to save alert store to localStorage', e);
+    }
+}
+
+function loadAlertStore() {
+    try {
+        const stored = localStorage.getItem(ALERT_STORAGE_KEY);
+        if (stored) {
+            const data = JSON.parse(stored);
+            window.alertStore.alerts = data.alerts || [];
+            window.alertStore.logs = data.logs || [];
+
+            // Re-map string dates back to Date objects in logs
+            window.alertStore.logs.forEach(log => {
+                if (log.time) log.time = new Date(log.time);
+            });
+
+            console.log(`✅ Alert Store Hydrated: ${window.alertStore.alerts.length} alerts, ${window.alertStore.logs.length} logs.`);
+        }
+    } catch (e) {
+        console.error('Failed to load alert store from localStorage', e);
+    }
+}
+
+/** SERVER-SIDE AUDIT LOGGING */
+function appendAuditLog(alert, message, symbol, snapshot = null) {
+    fetch('http://localhost:3000/audit-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            message: message,
+            symbol: symbol,
+            alertName: alert.name,
+            time: new Date().toISOString(),
+            snapshot: snapshot
+        })
+    }).catch(err => console.error('[Audit] Service Unreachable:', err));
+}
+
+// Initial Load
+loadAlertStore();
+
 /**
  * Comparison Operators
  */
@@ -357,6 +410,7 @@ function createAlert() {
             alertObj.webhookBody = webhookBodyRaw;
 
             showToast('Alert Updated', `Alert "${alertObj.name}" saved.`);
+            saveAlertStore();
         }
     } else {
         // CREATE NEW
@@ -367,18 +421,19 @@ function createAlert() {
             triggerMode: 'once_per_bar_close',
             triggerLimit: triggerLimit,
             triggerCount: 0,
+            isActive: true, // NEW
+            isValid: true,  // NEW
             expiration: document.getElementById('alert-expiration').value,
             message: document.getElementById('alert-message').value,
             notifyToast: document.getElementById('notify-toast').checked,
             notifySound: document.getElementById('notify-sound').checked,
             webhook: document.getElementById('notify-webhook').checked ? document.getElementById('webhook-url').value : null,
-            webhookBody: webhookBodyRaw,
-            isActive: true,
-            isValid: true,
-            lastTriggeredBar: -1
+            webhookBody: webhookBodyRaw
         };
+
         window.alertStore.alerts.push(alertObj);
-        showToast('Alert Created', `Alert "${alertObj.name}" created.`);
+        showToast('Alert Created', `Alert "${alertObj.name}" is now active.`);
+        saveAlertStore();
     }
 
     modal.remove();
@@ -520,6 +575,38 @@ function handleAlertTrigger(alert, data, symbol, timeframe) {
     window.alertStore.logs.unshift(logEntry);
     if (window.alertStore.logs.length > 50) window.alertStore.logs.pop();
 
+    // Persist to localStorage and Audit File
+    saveAlertStore();
+
+    // Build Snapshot for Audit Log
+    const snapshot = {
+        price: data.price ? {
+            open: data.price.open?.toFixed(2),
+            high: data.price.high?.toFixed(2),
+            low: data.price.low?.toFixed(2),
+            close: data.price.close?.toFixed(2),
+            volume: data.price.volume
+        } : null,
+        frvp: (window.frvpToolState?.instances || []).map(inst => ({
+            poc: inst.profileData?.poc?.priceLevel?.toFixed(2) || 'N/A',
+            vah: inst.profileData?.vah?.priceLevel?.toFixed(2) || 'N/A',
+            val: inst.profileData?.val?.priceLevel?.toFixed(2) || 'N/A'
+        })),
+        indicators: {}
+    };
+
+    // Capture indicator values from candleCloseData
+    Object.keys(data).forEach(key => {
+        if (key !== 'price' && key !== 'barIndex' && key !== 'time') {
+            const val = data[key]?.close;
+            if (val !== undefined && val !== null) {
+                snapshot.indicators[key.toUpperCase()] = typeof val === 'number' ? val.toFixed(2) : val;
+            }
+        }
+    });
+
+    appendAuditLog(alert, msg, symbol, snapshot);
+
     // SEND WEBHOOK
     if (alert.webhook) {
         let bodyToSend = {};
@@ -642,7 +729,8 @@ function showAlertLogs() {
 
 function clearAlertLogs() {
     window.alertStore.logs = [];
-    showAlertLogs(); // Refresh
+    saveAlertStore(); // Clear persisted logs too
+    if (activeSidebarTab === 'logs') renderSideLogs();
 }
 
 // ALERT MANAGER COMPATIBILITY
@@ -658,14 +746,16 @@ function toggleAlertStatus(id, newStatus) {
     const alert = window.alertStore.alerts.find(a => a.id === id);
     if (alert) {
         alert.isActive = newStatus;
-        renderSideAlerts();
+        saveAlertStore();
+        renderAlertManager();
     }
 }
 
 function deleteAlert(id) {
     if (confirm('Delete this alert?')) {
         window.alertStore.alerts = window.alertStore.alerts.filter(a => a.id !== id);
-        renderSideAlerts();
+        saveAlertStore();
+        renderAlertManager();
     }
 }
 
@@ -884,17 +974,20 @@ window.closeSidebar = closeSidebar;
 window.renderSideAlerts = renderSideAlerts;
 window.renderSideLogs = renderSideLogs;
 
-// Initial Badge Sync
+// Initial Badge Sync & UI Render
 setTimeout(() => {
     if (window.alertStore) {
+        // Sync Badge
         const badge = document.getElementById('alert-badge');
         if (badge) {
             const activeCount = window.alertStore.alerts.filter(a => a.isActive).length;
             badge.textContent = activeCount;
             badge.style.display = activeCount > 0 ? 'block' : 'none';
         }
+        // Refresh Manager if visible
+        renderAlertManager();
     }
-}, 1000);
+}, 500);
 
 console.log('✅ Sidebar Alert Management Logic Loaded');
 
