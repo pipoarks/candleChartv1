@@ -28,6 +28,7 @@
     <script src="indicators/overlays.js"></script>
     <script src="indicators/replay.js"></script>
     <script src="indicators/sync.js"></script>
+    <script src="symbols.js"></script>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,6 +42,45 @@
     <div class="container">
         <h1>📈 TradingView Chart</h1>
         <p class="subtitle">Interactive Candlestick Chart with Live Market Data</p>
+
+        <!-- Right Vertical Navbar -->
+        <nav class="right-navbar">
+            <div class="nav-top">
+                <button class="nav-item" onclick="toggleSidebarTab('alerts')" title="Alerts">
+                    <span class="nav-icon">⏰</span>
+                    <span class="nav-badge" id="alert-badge">0</span>
+                </button>
+            </div>
+            <div class="nav-bottom">
+                <button class="nav-item" title="Help">
+                    <span class="nav-icon">❓</span>
+                </button>
+            </div>
+        </nav>
+
+        <!-- Right Sidebar -->
+        <div id="right-sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-tabs">
+                    <button id="tab-alerts" class="sidebar-tab-btn active"
+                        onclick="switchSidebarTab('alerts')">Alerts</button>
+                    <button id="tab-logs" class="sidebar-tab-btn" onclick="switchSidebarTab('logs')">Log <span
+                            id="log-badge" class="badge-mini">0</span></button>
+                </div>
+                <button class="close-sidebar" onclick="closeSidebar()">&times;</button>
+            </div>
+
+            <div class="sidebar-toolbar">
+                <button class="icon-btn" onclick="initAlertModal()" title="Create Alert">➕</button>
+                <button class="icon-btn" onclick="renderSideAlerts()" title="Refresh">🔄</button>
+                <div style="flex:1"></div>
+                <button class="icon-btn" title="More Options">⋮</button>
+            </div>
+
+            <div id="sidebar-content" class="sidebar-content">
+                <!-- Content will be injected here -->
+            </div>
+        </div>
 
         <div class="controls-panel">
             <div class="controls-grid">
@@ -253,7 +293,8 @@
          * Fetch candle data from the REST API
          */
         const getData = async () => {
-            const symbol = document.getElementById('symbol').value;
+            const rawSymbol = document.getElementById('symbol').value;
+            const symbol = window.getTechnicalSymbol ? window.getTechnicalSymbol(rawSymbol) : rawSymbol;
             const resolution = document.getElementById('resolution').value;
             const rangeFrom = document.getElementById('rangeFrom').value;
             const rangeTo = document.getElementById('rangeTo').value;
@@ -550,6 +591,47 @@
                 window.candleSeries = candleSeries; // Expose for drawings.js
 
                 candleSeries.setData(klinedata);
+
+                // --- Auto-Zoom to Latest Day ---
+                if (klinedata.length > 0) {
+                    const lastCandle = klinedata[klinedata.length - 1];
+                    const lastDate = new Date(lastCandle.time * 1000);
+
+                    // Format key for comparison (YYYY-MM-DD) in IST 
+                    const formatter = new Intl.DateTimeFormat('en-US', {
+                        timeZone: 'Asia/Kolkata',
+                        year: 'numeric', month: '2-digit', day: '2-digit'
+                    });
+
+                    const getDayKey = (timestamp) => {
+                        const d = new Date(timestamp * 1000);
+                        return formatter.format(d);
+                    };
+
+                    const targetDayKey = getDayKey(lastCandle.time);
+
+                    // Find the index where the latest day starts
+                    let startIndex = klinedata.length - 1;
+                    for (let i = klinedata.length - 1; i >= 0; i--) {
+                        if (getDayKey(klinedata[i].time) === targetDayKey) {
+                            startIndex = i;
+                        } else {
+                            break; // Stop once we move to the previous day
+                        }
+                    }
+
+                    // Apply zoom
+                    // logical range is 0-indexed based on bars
+                    // We want to see from startIndex to end
+                    // Adding a small buffer to the right if needed, but 'to' usually is explicit logic
+
+                    chart.timeScale().setVisibleLogicalRange({
+                        from: startIndex,
+                        to: klinedata.length + 5 // +5 for some right padding
+                    });
+
+                    console.log(`🔎 Zoomed to latest day: ${targetDayKey} (Index: ${startIndex})`);
+                }
 
                 // Central Click Dispatcher
                 chart.subscribeClick((param) => {
@@ -1195,7 +1277,8 @@
                     ind.instance = createCMFChart(el, cmfData, { ...ind.settings, fullData: klinedata });
                 } else if (ind.type === 'CVD') {
                     // Fetch 1-minute data for CVD calculation
-                    const symbol = document.getElementById('symbol').value;
+                    const rawSymbol = document.getElementById('symbol').value;
+                    const symbol = window.getTechnicalSymbol ? window.getTechnicalSymbol(rawSymbol) : rawSymbol;
                     const rangeFrom = document.getElementById('rangeFrom').value;
                     const rangeTo = document.getElementById('rangeTo').value;
 
@@ -1226,7 +1309,8 @@
                         });
                 } else if (ind.type === 'FRVP') {
                     // Fetch data and calculate FRVP
-                    const symbol = document.getElementById('symbol').value;
+                    const rawSymbol = document.getElementById('symbol').value;
+                    const symbol = window.getTechnicalSymbol ? window.getTechnicalSymbol(rawSymbol) : rawSymbol;
                     const rangeFrom = document.getElementById('rangeFrom').value;
                     const rangeTo = document.getElementById('rangeTo').value;
 

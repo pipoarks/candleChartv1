@@ -120,24 +120,14 @@ function placeHorizontalRay(param) {
     const paneId = param.paneId || 'main';
     let price = null;
 
-    // Try to get price from the series that was clicked
-    if (param.seriesData.size > 0) {
-        for (const [series, data] of param.seriesData) {
-            price = data.close ?? data.value;
-            if (price !== undefined && price !== null) break;
-        }
-    }
-
-    // Fallback: Use coordinateToPrice if we can find the series
-    if (price == null) {
-        if (paneId === 'main' && window.candleSeries) {
-            price = window.candleSeries.coordinateToPrice(param.point.y);
-        } else {
-            // Find indicator series for the pane
-            const ind = window.activeIndicators.find(i => i.id === paneId);
-            if (ind && ind.instance && ind.instance.series) {
-                price = ind.instance.series.coordinateToPrice(param.point.y);
-            }
+    // Use exact coordinate from click
+    if (paneId === 'main' && window.candleSeries) {
+        price = window.candleSeries.coordinateToPrice(param.point.y);
+    } else {
+        // Find indicator series for the pane
+        const ind = (window.activeIndicators || []).find(i => i.id === paneId);
+        if (ind && ind.instance && ind.instance.series) {
+            price = ind.instance.series.coordinateToPrice(param.point.y);
         }
     }
 

@@ -66,15 +66,15 @@ function initAlertModal(preselectedRayId = null, alertToEdit = null) {
     // Defaults or Existing Values
     let title = `Create Alert on ${document.getElementById('symbol').value}`;
     let btnText = "Create Alert";
-    let nameVal = "";
+    let nameVal = document.getElementById('symbol').value;
     let limitVal = "1"; // Default to Once
     let expVal = "";
     let msgVal = "Alert Triggered: {{symbol}} conditions met.";
     let toastChecked = true;
     let soundChecked = true;
-    let webhookChecked = false;
-    let webhookUrl = "";
-    let webhookBody = '{\n  "message": "{{message}}",\n  "symbol": "{{symbol}}"\n}';
+    let webhookChecked = true; // Enable by default as requested
+    let webhookUrl = "http://nihongotranslator.online/postOrder";
+    let webhookBody = '{\n  "ticker": "{{symbol}}",\n  "close": "{{close}}",\n  "action": "BUY"\n}';
 
     if (alertToEdit) {
         title = "Edit Alert";
@@ -100,8 +100,8 @@ function initAlertModal(preselectedRayId = null, alertToEdit = null) {
     if (alertToEdit) modal.dataset.editingId = alertToEdit.id;
 
     modal.innerHTML = `
-        <div class="frvp-settings-content" style="max-width: 600px;">
-            <div class="frvp-settings-header" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+        <div class="frvp-settings-content" style="max-width: 1000px; padding: 2rem;">
+            <div class="frvp-settings-header" style="flex-direction: column; align-items: flex-start; gap: 1rem; margin-bottom: 2rem;">
                 <h3>${title}</h3>
                 <div class="alert-tabs">
                     <div class="alert-tab active" data-tab="settings" onclick="switchAlertTab(this)">Settings</div>
@@ -163,9 +163,10 @@ function initAlertModal(preselectedRayId = null, alertToEdit = null) {
                         <label>Request Body (JSON)</label>
                         <textarea id="webhook-body" style="width:100%; height:120px; background:rgba(0,0,0,0.2); border:1px solid var(--border-color); border-radius:8px; color:white; padding:10px; font-family:monospace; font-size:0.8rem;">${webhookBody}</textarea>
                          <div class="alert-placeholder-list">
-                             <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{symbol}}')">{{symbol}}</span>
-                             <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{message}}')">{{message}}</span>
-                             <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{alert_name}}')">{{alert_name}}</span>
+                              <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{symbol}}')">{{symbol}}</span>
+                              <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{close}}')">{{close}}</span>
+                              <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{message}}')">{{message}}</span>
+                              <span class="placeholder-chip" onclick="insertPlaceholder('webhook-body', '{{alert_name}}')">{{alert_name}}</span>
                         </div>
                     </div>
                 </div>
@@ -287,7 +288,7 @@ function createAlert() {
         // UPDATE EXISTING
         const alertObj = window.alertStore.alerts.find(a => a.id === editingId);
         if (alertObj) {
-            alertObj.name = alertName || `Strategy Alert (${conditions.length} conditions)`;
+            alertObj.name = alertName || document.getElementById('symbol').value;
             alertObj.conditions = conditions;
             alertObj.triggerLimit = triggerLimit;
             if (alertObj.triggerLimit !== -1 && alertObj.triggerCount >= alertObj.triggerLimit) {
@@ -306,7 +307,7 @@ function createAlert() {
         // CREATE NEW
         const alertObj = {
             id: `alert_${Date.now()}`,
-            name: alertName || `Strategy Alert (${conditions.length} conditions)`,
+            name: alertName || document.getElementById('symbol').value,
             conditions: conditions,
             triggerMode: 'once_per_bar_close',
             triggerLimit: triggerLimit,
@@ -330,13 +331,6 @@ function createAlert() {
     if (document.getElementById('alert-manager-panel')) renderAlertManager();
 }
 
-/** EDIT HELPER */
-function editAlert(id) {
-    const alert = window.alertStore.alerts.find(a => a.id === id);
-    if (alert) {
-        initAlertModal(null, alert);
-    }
-}
 
 /** EVALUATE ALERTS */
 function evaluateAlerts(candleCloseData) {
@@ -392,15 +386,34 @@ function handleAlertTrigger(alert, data, symbol, timeframe) {
     if (alert.notifyToast) showToast(`🔔 ${alert.name}`, msg);
     if (alert.notifySound) playAlertSound();
 
+    // Create log entry for the trigger
+    const logId = `log_${Date.now()}`;
+    const logEntry = {
+        id: logId,
+        time: new Date(),
+        alertName: alert.name,
+        message: msg,
+        url: alert.webhook || 'No Webhook',
+        status: alert.webhook ? 'Pending' : 'Triggered',
+        statusCode: null,
+        error: null,
+        body: null,
+        price: data.price?.close?.toFixed(2) || 'N/A',
+        cvd: data.cvd?.close ? (Math.abs(data.cvd.close) >= 1000 ? (data.cvd.close / 1000).toFixed(1) + 'K' : data.cvd.close.toFixed(0)) : null
+    };
+
+    window.alertStore.logs.unshift(logEntry);
+    if (window.alertStore.logs.length > 50) window.alertStore.logs.pop();
+
     // SEND WEBHOOK
     if (alert.webhook) {
-        // 1. Process Custom Body
         let bodyToSend = {};
         if (alert.webhookBody) {
             let processedStr = alert.webhookBody
                 .replace(/{{symbol}}/g, symbol)
                 .replace(/{{message}}/g, msg)
-                .replace(/{{alert_name}}/g, alert.name);
+                .replace(/{{alert_name}}/g, alert.name)
+                .replace(/{{close}}/g, data.price?.close || "0");
 
             try {
                 bodyToSend = JSON.parse(processedStr);
@@ -419,9 +432,8 @@ function handleAlertTrigger(alert, data, symbol, timeframe) {
             };
         }
 
-        // 2. Send via Proxy (CORS Bypass)
-        console.log('Routing webhook via Proxy:', alert.webhook);
-        sendWebhookProxy(alert.webhook, bodyToSend);
+        logEntry.body = JSON.stringify(bodyToSend, null, 2);
+        sendWebhookProxy(alert.webhook, bodyToSend, logId);
     }
 
     if (alert.triggerLimit !== -1 && alert.triggerCount >= alert.triggerLimit) {
@@ -432,127 +444,9 @@ function handleAlertTrigger(alert, data, symbol, timeframe) {
     renderAlertManager();
 }
 
-/** ALERT MANAGER UI */
-function toggleAlertManager() {
-    let panel = document.getElementById('alert-manager-panel');
-    if (panel) {
-        panel.classList.toggle('visible');
-    } else {
-        createAlertManagerPanel();
-    }
-}
+function sendWebhookProxy(targetUrl, payloadData, existingLogId) {
+    const entry = window.alertStore.logs.find(l => l.id === existingLogId);
 
-function createAlertManagerPanel() {
-    const panel = document.createElement('div');
-    panel.id = 'alert-manager-panel';
-    panel.style.cssText = `position:fixed; top:60px; right:60px; width:320px; max-height:500px; background:rgba(15,23,42,0.95); border:1px solid var(--border-color); border-radius:8px; z-index:1000; box-shadow:0 10px 25px rgba(0,0,0,0.5); display:none; flex-direction:column; overflow:hidden; backdrop-filter:blur(5px);`;
-    panel.className = 'visible';
-
-    panel.innerHTML = `
-        <div style="padding:15px; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center;">
-            <div style="display:flex; align-items:center; gap:10px;">
-                <h3 style="margin:0; font-size:1rem; color:var(--text-primary);">Active Alerts</h3>
-                <button onclick="showAlertLogs()" style="background:rgba(255,255,255,0.1); border:none; color:var(--text-secondary); font-size:0.8rem; padding:4px 8px; border-radius:4px; cursor:pointer;" title="View Webhook Logs">📜 Logs</button>
-            </div>
-            <span onclick="toggleAlertManager()" style="cursor:pointer; font-size:1.2rem;">&times;</span>
-        </div>
-        <div id="alert-list-container" style="overflow-y:auto; padding:10px; flex:1;"></div>
-    `;
-    document.body.appendChild(panel);
-    renderAlertManager();
-}
-
-function renderAlertManager() {
-    const container = document.getElementById('alert-list-container');
-    if (!container) return;
-
-    if (window.alertStore.alerts.length === 0) {
-        container.innerHTML = `<div style="text-align:center; padding:20px; color:var(--text-secondary);">No alerts created</div>`;
-        return;
-    }
-
-    container.innerHTML = window.alertStore.alerts.map((alert) => {
-        const limitText = alert.triggerLimit === -1 ? '∞' : `${alert.triggerCount}/${alert.triggerLimit}`;
-        const statusColor = alert.isValid ? (alert.isActive ? '#10b981' : '#64748b') : '#ef4444';
-
-        return `
-            <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:6px; padding:10px; margin-bottom:8px;">
-                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:5px;">
-                    <div style="font-weight:600; color:var(--text-primary); font-size:0.9rem;">${alert.name}</div>
-                    <label class="switch" style="position:relative; display:inline-block; width:34px; height:18px;">
-                        <input type="checkbox" ${alert.isActive && alert.isValid ? 'checked' : ''} onchange="toggleAlertStatus('${alert.id}', this.checked)" ${!alert.isValid ? 'disabled' : ''}>
-                        <span class="slider round" style="position:absolute; top:0; left:0; right:0; bottom:0; background-color:#ccc; transition:.4s; border-radius:34px;"></span>
-                    </label>
-                </div>
-                
-                <div style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:5px;">
-                    ${alert.conditions.map(c => `<div>${c.dataSourceName} ${c.comparisonSymbol} ${c.horizontalLineName}</div>`).join('')}
-                </div>
-
-                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:var(--text-secondary);">
-                    <div style="display:flex; align-items:center; gap:5px;">
-                        <span style="width:8px; height:8px; border-radius:50%; background:${statusColor}; display:inline-block;"></span>
-                        <span>Triggers: ${limitText}</span>
-                    </div>
-                    <div>
-                        <button onclick="editAlert('${alert.id}')" style="background:none; border:none; color:#3b82f6; cursor:pointer; margin-right:8px;">Edit</button>
-                        <button onclick="deleteAlert('${alert.id}')" style="background:none; border:none; color:#ef4444; cursor:pointer;">Delete</button>
-                    </div>
-                </div>
-            </div>
-        `;
-    }).join('');
-
-    if (!document.getElementById('toggle-css')) {
-        const style = document.createElement('style');
-        style.id = 'toggle-css';
-        style.innerHTML = `
-            .switch input { opacity: 0; width: 0; height: 0; }
-            .slider { background-color: #334155; }
-            .switch input:checked + .slider { background-color: #8b5cf6; }
-            .switch input:checked + .slider:before { transform: translateX(16px); }
-            .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 2px; bottom: 2px; background-color: white; transition: .4s; border-radius: 50%; }
-            #alert-manager-panel.visible { display: flex !important; }
-        `;
-        document.head.appendChild(style);
-    }
-}
-
-function toggleAlertStatus(id, newStatus) {
-    const alert = window.alertStore.alerts.find(a => a.id === id);
-    if (alert) {
-        alert.isActive = newStatus;
-        renderAlertManager();
-    }
-}
-
-function deleteAlert(id) {
-    if (confirm('Delete this alert?')) {
-        window.alertStore.alerts = window.alertStore.alerts.filter(a => a.id !== id);
-        renderAlertManager();
-    }
-}
-
-/**
- * WEBHOOK LOGGING SYSTEM & PROXY
- */
-function sendWebhookProxy(targetUrl, payloadData) {
-    const logId = `log_${Date.now()}`;
-    const entry = {
-        id: logId,
-        time: new Date(),
-        url: targetUrl,
-        method: 'POST',
-        body: JSON.stringify(payloadData, null, 2),
-        status: 'Pending',
-        statusCode: null,
-        error: null
-    };
-
-    window.alertStore.logs.unshift(entry);
-    if (window.alertStore.logs.length > 50) window.alertStore.logs.pop();
-
-    // Send to LOCAL NODE PROXY
     fetch('http://localhost:3000/proxy_webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -563,21 +457,21 @@ function sendWebhookProxy(targetUrl, payloadData) {
         })
     })
         .then(async res => {
-            // The Proxy returns the status of the TARGET response
             const text = await res.text();
-            entry.status = res.ok ? 'Success' : 'Failed';
-            entry.statusCode = res.status;
-            if (!res.ok) entry.error = text;
-            console.log(`Webhook Proxy result: ${res.status}`, text);
+            if (entry) {
+                entry.status = res.ok ? 'Success' : 'Failed';
+                entry.statusCode = res.status;
+                if (!res.ok) entry.error = text;
+            }
         })
         .catch(err => {
-            entry.status = 'Failed';
-            entry.error = err.message;
-            console.error('Webhook Proxy failed:', err);
+            if (entry) {
+                entry.status = 'Failed';
+                entry.error = err.message;
+            }
         })
         .finally(() => {
-            const logModal = document.getElementById('log-viewer-modal');
-            if (logModal) showAlertLogs();
+            if (activeSidebarTab === 'logs') renderSideLogs();
         });
 }
 
@@ -636,12 +530,223 @@ function clearAlertLogs() {
     showAlertLogs(); // Refresh
 }
 
+// ALERT MANAGER COMPATIBILITY
+function toggleAlertManager() {
+    toggleSidebarTab('alerts');
+}
+
+function renderAlertManager() {
+    renderSideAlerts();
+}
+
+function toggleAlertStatus(id, newStatus) {
+    const alert = window.alertStore.alerts.find(a => a.id === id);
+    if (alert) {
+        alert.isActive = newStatus;
+        renderSideAlerts();
+    }
+}
+
+function deleteAlert(id) {
+    if (confirm('Delete this alert?')) {
+        window.alertStore.alerts = window.alertStore.alerts.filter(a => a.id !== id);
+        renderSideAlerts();
+    }
+}
+
+function editAlert(id) {
+    const alert = window.alertStore.alerts.find(a => a.id === id);
+    if (alert) {
+        // Correct signature: initAlertModal(preselectedRayId, alertToEdit)
+        initAlertModal(null, alert);
+    }
+}
 
 // UTILS
 function showToast(title, msg) { const t = document.createElement('div'); t.style.cssText = `position:fixed; top:20px; right:20px; background:var(--bg-secondary); border-left:4px solid var(--accent-primary); padding:15px 25px; border-radius:8px; box-shadow:0 5px 15px rgba(0,0,0,0.5); z-index:9999; animation:slideIn 0.3s ease-out; color:white; font-family:sans-serif;`; t.innerHTML = `<strong style="color:var(--accent-primary);display:block;margin-bottom:5px">${title}</strong><div style="font-size:0.9rem">${msg}</div>`; document.body.appendChild(t); setTimeout(() => t.remove(), 5000); }
 function playAlertSound() { new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3').play().catch(() => { }); }
 
-// Exports
+/**
+ * SIDEBAR LOGIC
+ */
+let activeSidebarTab = 'alerts';
+
+function toggleSidebarTab(tab) {
+    const sidebar = document.getElementById('right-sidebar');
+    const isOpen = sidebar.classList.contains('open');
+
+    if (isOpen && activeSidebarTab === tab) {
+        closeSidebar();
+    } else {
+        openSidebar(tab);
+    }
+}
+
+function openSidebar(tab) {
+    const sidebar = document.getElementById('right-sidebar');
+    sidebar.classList.add('open');
+    if (tab) switchSidebarTab(tab);
+}
+
+function closeSidebar() {
+    const sidebar = document.getElementById('right-sidebar');
+    sidebar.classList.remove('open');
+}
+
+function switchSidebarTab(tab) {
+    activeSidebarTab = tab;
+
+    // Update UI Tabs
+    document.querySelectorAll('.sidebar-tab-btn').forEach(t => t.classList.remove('active'));
+    document.getElementById(`tab-${tab}`).classList.add('active');
+
+    // Render Content
+    if (tab === 'alerts') renderSideAlerts();
+    else if (tab === 'logs') renderSideLogs();
+}
+
+function renderSideAlerts() {
+    const container = document.getElementById('sidebar-content');
+    if (!container) return;
+
+    const alerts = window.alertStore.alerts;
+
+    // Update Navbar Badge
+    const activeCount = alerts.filter(a => a.isActive).length;
+    const badge = document.getElementById('alert-badge');
+    if (badge) {
+        badge.textContent = activeCount;
+        badge.style.display = activeCount > 0 ? 'block' : 'none';
+    }
+
+    if (alerts.length === 0) {
+        container.innerHTML = `<div style="text-align:center; padding:50px 20px; color:var(--text-secondary);">
+            <div style="font-size:2rem; margin-bottom:1rem;">⏰</div>
+            <p>No alerts created yet.</p>
+            <button class="btn-primary" onclick="initAlertModal()" style="margin-top:1rem; padding:0.5rem 1rem;">Create One</button>
+        </div>`;
+        return;
+    }
+
+    container.innerHTML = alerts.map(alert => {
+        const statusColor = alert.isValid ? (alert.isActive ? 'var(--accent-success)' : 'var(--text-secondary)') : 'var(--accent-danger)';
+        const statusText = alert.isValid ? (alert.isActive ? 'Active' : 'Stopped') : 'Invalid';
+        const limitText = alert.triggerLimit === -1 ? '∞' : `${alert.triggerCount}/${alert.triggerLimit}`;
+
+        return `
+            <div class="sidebar-alert-item" style="border-left: 3px solid ${statusColor}">
+                <div class="alert-item-header">
+                    <div class="alert-item-name">${alert.name}</div>
+                    <label class="switch" style="width: 30px; height: 16px;">
+                        <input type="checkbox" ${alert.isActive && alert.isValid ? 'checked' : ''} onchange="toggleAlertStatus('${alert.id}', this.checked)" ${!alert.isValid ? 'disabled' : ''}>
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+                
+                <div class="alert-item-conditions">
+                    ${alert.conditions.map(c => `<div>${c.dataSourceName} ${c.comparisonSymbol} ${c.horizontalLineName}</div>`).join('')}
+                </div>
+
+                <div class="alert-item-footer">
+                    <div class="alert-status-pill">
+                        <span class="status-dot" style="background: ${statusColor}"></span>
+                        <span style="color: ${statusColor}">${statusText}</span>
+                        <span style="margin-left: 8px; color: var(--text-secondary)">(${limitText})</span>
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button onclick="editAlert('${alert.id}')" style="background:none; border:none; color:var(--accent-primary); cursor:pointer; font-size:0.75rem;">Edit</button>
+                        <button onclick="deleteAlert('${alert.id}')" style="background:none; border:none; color:var(--accent-danger); cursor:pointer; font-size:0.75rem;">Delete</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderSideLogs() {
+    const container = document.getElementById('sidebar-content');
+    if (!container) return;
+
+    const logs = window.alertStore.logs;
+
+    // Update Log Badge
+    const logBadge = document.getElementById('log-badge');
+    if (logBadge) {
+        logBadge.textContent = logs.length;
+    }
+
+    if (logs.length === 0) {
+        container.innerHTML = `<div style="text-align:center; padding:50px 20px; color:var(--text-secondary);">
+            <div style="font-size:2.5rem; margin-bottom:1rem;">📜</div>
+            <p style="font-size:2.2rem;">No logs yet.</p>
+        </div>`;
+        return;
+    }
+
+    container.innerHTML = `
+        <div style="display:flex; justify-content:flex-end; margin-bottom:1.5rem;">
+            <button onclick="clearAlertLogs()" style="background:none; border:none; color:var(--accent-danger); cursor:pointer; font-size:2rem; font-weight:600;">Clear All Logs</button>
+        </div>
+        ${logs.map(log => {
+        const color = log.status === 'Success' ? 'var(--accent-success)' : (log.status === 'Pending' ? '#f59e0b' : 'var(--accent-danger)');
+        const alertName = log.alertName || 'Unknown Alert';
+        return `
+                <div class="sidebar-log-item" style="border-left: 3px solid ${color}; margin-bottom: 1rem; background: rgba(255,255,255,0.02); border-radius: 8px;">
+                    <div style="display:flex; justify-content:space-between; align-items: center; margin-bottom: 8px;">
+                        <span class="log-status" style="color:${color}; font-size: 2.2rem;">${log.status} ${log.statusCode ? `(${log.statusCode})` : ''}</span>
+                        <span class="log-time" style="font-size: 1.8rem;">${log.time.toLocaleTimeString()}</span>
+                    </div>
+                    
+                    <div style="margin-bottom: 8px;">
+                        <div style="font-weight: 700; color: var(--text-primary); font-size: 2.1rem;">${alertName}</div>
+                        <div style="color: var(--text-secondary); font-size: 1.9rem; margin-top: 4px;">${log.message}</div>
+                    </div>
+
+                    <div style="color:var(--accent-primary); font-family:monospace; word-break:break-all; font-size:1.7rem; margin-bottom:8px; opacity: 0.8;">
+                        URL: ${log.url}
+                    </div>
+
+                    <div style="display:flex; flex-direction: column; gap: 10px; font-family: monospace; font-size: 1.8rem; margin-bottom: 12px; background: rgba(0,0,0,0.2); padding: 10px 15px; border-radius: 4px;">
+                        ${log.price ? `<span>Price: <b style="color:white">${log.price}</b></span>` : ''}
+                        ${log.cvd ? `<span>CVD: <b style="color:white">${log.cvd}</b></span>` : ''}
+                    </div>
+
+                    ${log.error ? `
+                        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; padding: 12px; margin-bottom: 8px; color: #fca5a5; font-size: 1.8rem;">
+                            <strong>Error:</strong> ${log.error}
+                        </div>
+                    ` : ''}
+
+                    <details style="margin-top: 8px;">
+                        <summary style="font-size:1.7rem; color:var(--text-secondary); cursor:pointer; font-weight: 500;">View Raw Payload</summary>
+                        <pre style="background:rgba(0,0,0,0.4); padding:15px; border-radius:6px; font-size:1.7rem; margin-top:10px; overflow-x:auto; color: #94a3b8;">${log.body || 'No payload body'}</pre>
+                    </details>
+                </div>
+            `;
+    }).join('')}
+    `;
+}
+
+// Override existing functions to sync with sidebar
+const originalRenderAlertManager = window.renderAlertManager;
+window.renderAlertManager = function () {
+    if (originalRenderAlertManager) originalRenderAlertManager();
+    renderSideAlerts();
+};
+
+const originalShowAlertLogs = window.showAlertLogs;
+window.showAlertLogs = function () {
+    if (originalShowAlertLogs) originalShowAlertLogs();
+    if (activeSidebarTab === 'logs') renderSideLogs();
+};
+
+const originalClearLogs = window.clearAlertLogs;
+window.clearAlertLogs = function () {
+    if (originalClearLogs) originalClearLogs();
+    renderSideLogs();
+};
+
+// Expose functions
 window.initAlertModal = initAlertModal;
 window.evaluateAlerts = evaluateAlerts;
 window.getAvailableHorizontalLines = getAvailableHorizontalLines;
@@ -651,11 +756,29 @@ window.insertPlaceholder = insertPlaceholder;
 window.createAlert = createAlert;
 window.addConditionRow = addConditionRow;
 window.toggleAlertManager = toggleAlertManager;
-window.renderAlertManager = renderAlertManager;
 window.toggleAlertStatus = toggleAlertStatus;
 window.deleteAlert = deleteAlert;
 window.editAlert = editAlert;
 window.showAlertLogs = showAlertLogs;
 window.clearAlertLogs = clearAlertLogs;
 
-console.log('✅ Enhanced alerts module loaded (Editing + Logging + Proxy Enabled)');
+window.toggleSidebarTab = toggleSidebarTab;
+window.switchSidebarTab = switchSidebarTab;
+window.closeSidebar = closeSidebar;
+window.renderSideAlerts = renderSideAlerts;
+window.renderSideLogs = renderSideLogs;
+
+// Initial Badge Sync
+setTimeout(() => {
+    if (window.alertStore) {
+        const badge = document.getElementById('alert-badge');
+        if (badge) {
+            const activeCount = window.alertStore.alerts.filter(a => a.isActive).length;
+            badge.textContent = activeCount;
+            badge.style.display = activeCount > 0 ? 'block' : 'none';
+        }
+    }
+}, 1000);
+
+console.log('✅ Sidebar Alert Management Logic Loaded');
+
